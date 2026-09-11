@@ -2,17 +2,19 @@
 
 | Phase | Scope | Status |
 | --- | --- | --- |
-| 1 | Skill runner and OpenCode ACP backend running one skill over a PR diff | done |
-| 2 | Composite Action and webhook server running skills in order and posting reviews, checks and a status comment | done, verified on pull request 1 |
-| 3 | Hosted App: register the GitHub App, host the webhook server, durable queue, sandbox per job, per repo settings | planned |
-| 4 | Dashboard and API | planned |
-| Backend swap | Replace OpenCode with a paid or custom harness, see `documentation/backends/harness.md` | planned, starts with phase 3 |
-| Later | CI autofix and PR autofix skills, custom skills from a repository URL, self hosted runner for long jobs | not started |
+| 1 | Skill runner and OpenCode ACP backend running one review over a PR diff | done |
+| 2 | Composite Action and webhook server running reviews in order and posting reviews, checks and a status comment | done, verified on pull request 1 |
+| 3 | Settings in the backend: Supabase, API routes with GitHub OIDC, website, see `phase-3-settings.md` | planned |
+| 3b | Hosted App: register the GitHub App, host the server, durable queue, sandbox per job | planned |
+| 4 | Internal reviews: correctness, regressions, tests, before and after media, hardening, see `internal-reviews.md` | planned |
+| Backend swap | Replace OpenCode with a paid or custom harness, see `../backends/harness.md` | planned, starts with 3b |
+| Later | CI autofix and PR autofix, custom skills from a repository URL, self hosted runner for long jobs | not started |
 
 ## Open decisions
 
-- Repository split into public `shrike-ci` and private `shrike`, see `documentation/architecture/layout.md`.
+- Repository split into public `shrike-ci` and private `shrike`, see `../architecture/layout.md`.
 - Which paid model becomes the default once the hosted bot exists.
+- Fresh or shared agent session across reviews, decided by the evaluation set.
 
 ## Known limits today
 

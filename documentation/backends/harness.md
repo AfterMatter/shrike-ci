@@ -4,18 +4,13 @@ How the review engine talks to an agent, and how to replace OpenCode with any ot
 
 ## The contract
 
-`bot/src/backends/types.ts` is the whole interface:
+`bot/src/backends/types.ts` is the whole interface. A `Backend` opens an `AgentSession` for a checkout and a model name. A session answers one prompt with the final text plus token and cost usage, and can be closed.
 
-- `Backend` has a `name`, a `defaultModel`, and `open(options)`.
-- `open` receives `cwd` (the checked out PR), an optional `model` string, an optional `timeoutMs`, and a `log` callback. It returns an `AgentSession`.
-- `AgentSession.prompt(text)` sends one message and resolves with the final assistant text plus `usage.tokens` and `usage.cost`.
-- `AgentSession.close()` releases everything the session holds.
-
-The runner opens one session per skill, sends the skill prompt once, sends one retry prompt in the same session if the reply is not a valid report, and closes the session in a `finally`. No code outside `backends/` refers to a concrete backend: the rest of the repo goes through `getBackend` in `backends/index.ts` and the `Backend` and `AgentSession` types in `backends/types.ts`. Tests import a backend directly.
+The runner opens one session per review, sends the prompt once, sends one retry prompt in the same session if the reply is not a valid report, and closes the session in a `finally`. No code outside `backends/` refers to a concrete backend: the rest of the repo goes through `getBackend` in `backends/index.ts` and the `Backend` and `AgentSession` types in `backends/types.ts`. Tests import a backend directly.
 
 ## What every backend must guarantee
 
-- Tools are read only. The agent can read, list and search the checkout. It cannot edit, run shell commands, fetch the web, or leave `cwd`.
+- Tools cannot change files or run commands. Edit, write, shell, web access and directories outside `cwd` are denied. Read, list, search, language server lookups and the agent's own task list are allowed.
 - No GitHub secrets reach the agent. Strip `GITHUB_TOKEN`, `INPUT_GITHUB_TOKEN`, `GITHUB_APP_PRIVATE_KEY` and `GITHUB_WEBHOOK_SECRET` from any child environment.
 - The requested model is the model used. Fail at `open` if the runtime silently fell back to another one.
 - A hung agent is killed after `timeoutMs` and `prompt` rejects.
@@ -27,7 +22,7 @@ The runner opens one session per skill, sends the skill prompt once, sends one r
 
 1. Create `bot/src/backends/<name>.ts` exporting a `Backend`. Keep every runtime specific import in this file.
 2. Register it in the `backends` map in `bot/src/backends/index.ts`.
-3. Add `bot/test/<name>.test.ts` with the three live assertions: reads a file, cannot overwrite it, does not echo a planted token. Gate it on an env variable so unit runs stay offline.
+3. Add `bot/test/<name>.test.ts` with the four live assertions: reads a file, reports non-zero usage, cannot overwrite the file, does not echo a planted token. Gate it on an env variable so unit runs stay offline.
 4. Select it with the `backend` Action input or `SHRIKE_BACKEND` for the server. No other code changes.
 5. Add a short page next to this one with the runtime's install step and credentials.
 
@@ -37,7 +32,7 @@ The runner opens one session per skill, sends the skill prompt once, sends one r
 | --- | --- | --- | --- |
 | OpenCode over ACP (current) | subprocess, JSON-RPC on stdio | none for the free Zen models | Free tier only works inside the OpenCode binary. Permissions set through `OPENCODE_CONFIG_CONTENT`. |
 | pi (`@earendil-works/pi-coding-agent`) | in-process TypeScript SDK | provider API key | `createAgentSession` with `tools: ["read", "grep", "find", "ls"]`, `SessionManager.inMemory()`, a resource loader with `noExtensions`, `noSkills` and `noContextFiles`. Usage and cost come with each assistant message. |
-| Custom | own loop on a provider SDK | provider API key | Implement the four read only tools and the loop. The prompt and report contract in `bot/src/prompt.ts` and `bot/src/report.ts` stay unchanged, so skills do not change. |
+| Custom | own loop on a provider SDK | provider API key | Implement the four read only tools and the loop. The prompt and report contract in `bot/src/prompt.ts` and `bot/src/report.ts` stay unchanged, so reviews do not change. |
 
 ## Phase: backend swap
 
