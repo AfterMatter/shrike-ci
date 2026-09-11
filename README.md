@@ -73,7 +73,6 @@ Draft pull requests are skipped until marked ready for review. Pull requests fro
 ```
 core/       review engine: job model, prompt, report contract, diff, checkout, GitHub client, runner, settings client, backends/acp
 action/     composite GitHub Action around the engine
-documentation/  layout, agent harness contract and swap plan, roadmap
 ```
 
 The hosted API, the website, the review instructions and the GitHub App webhook live in the private `shrike` repository, which consumes `core/` from here.
