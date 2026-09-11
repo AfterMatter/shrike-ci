@@ -31,7 +31,7 @@ jobs:
       issues: write
     steps:
       - uses: actions/checkout@v4
-      - uses: forloopcodes/shrike/action@main
+      - uses: AfterMatter/shrike-ci/action@main
         with:
           skills: code-review, slop-review, security-review
 ```
@@ -39,7 +39,7 @@ jobs:
 That is the whole install. With no secrets the `acp` backend runs OpenCode on a free OpenCode Zen model. To use a paid provider set the model and the provider key:
 
 ```yaml
-      - uses: forloopcodes/shrike/action@main
+      - uses: AfterMatter/shrike-ci/action@main
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         with:
@@ -111,6 +111,7 @@ GITHUB_APP_ID=... GITHUB_APP_PRIVATE_KEY="$(cat key.pem)" GITHUB_WEBHOOK_SECRET=
 bot/        webhook, runner, skill loader, backends/acp (temporary)
 skills/     built in SKILL.md files
 action/     GitHub Action wrapper around the runner
+documentation/  layout, agent harness contract and swap plan, phase status
 ```
 
 ## Develop
