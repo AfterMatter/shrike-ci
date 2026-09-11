@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { jobFromEvent, parseTrigger } from "../src/job";
 
-const repository = { name: "shrike", owner: { login: "forloopcodes" } };
+const repository = { id: 501, name: "shrike", owner: { login: "forloopcodes" } };
 const installation = { id: 77 };
 
 describe("parseTrigger", () => {
@@ -12,13 +12,13 @@ describe("parseTrigger", () => {
     expect(parseTrigger(null)).toBeNull();
   });
 
-  test("bare mention means default skills", () => {
+  test("bare mention means the configured reviews", () => {
     expect(parseTrigger("@shrike")).toEqual([]);
     expect(parseTrigger("hey @shrike, take a look")).toEqual([]);
     expect(parseTrigger("@shrike.")).toEqual([]);
   });
 
-  test("named skills are ordered and lowercased", () => {
+  test("named reviews are ordered and lowercased", () => {
     expect(parseTrigger("@shrike security-review")).toEqual(["security-review"]);
     expect(parseTrigger("@Shrike Code-Review, slop-review")).toEqual(["code-review", "slop-review"]);
     expect(parseTrigger("@shrike cleanup please")).toEqual(["cleanup", "please"]);
@@ -32,10 +32,11 @@ describe("jobFromEvent", () => {
       expect(jobFromEvent("pull_request", { action, installation, repository, pull_request: { number: 12, draft: false } })).toEqual({
         owner: "forloopcodes",
         repo: "shrike",
+        repositoryId: 501,
         installationId: 77,
         pr: 12,
         trigger: "pull_request",
-        skills: [],
+        reviews: [],
       });
     }
   });
@@ -48,7 +49,7 @@ describe("jobFromEvent", () => {
 
   test("issue comments trigger only on pull requests that mention the bot", () => {
     const comment = { body: "@shrike slop-review", author_association: "COLLABORATOR" };
-    expect(jobFromEvent("issue_comment", { action: "created", repository, issue: { number: 4, pull_request: {} }, comment })).toMatchObject({ pr: 4, trigger: "comment", skills: ["slop-review"] });
+    expect(jobFromEvent("issue_comment", { action: "created", repository, issue: { number: 4, pull_request: {} }, comment })).toMatchObject({ pr: 4, trigger: "comment", reviews: ["slop-review"] });
     expect(jobFromEvent("issue_comment", { action: "created", repository, issue: { number: 4 }, comment })).toBeNull();
     expect(jobFromEvent("issue_comment", { action: "edited", repository, issue: { number: 4, pull_request: {} }, comment })).toBeNull();
     expect(jobFromEvent("issue_comment", { action: "created", repository, issue: { number: 4, pull_request: {} }, comment: { body: "nice" } })).toBeNull();
@@ -57,17 +58,18 @@ describe("jobFromEvent", () => {
   });
 
   test("review comments use the pull request number", () => {
-    expect(jobFromEvent("pull_request_review_comment", { action: "created", repository, pull_request: { number: 9 }, comment: { body: "@shrike", author_association: "OWNER" } })).toMatchObject({ pr: 9, skills: [] });
+    expect(jobFromEvent("pull_request_review_comment", { action: "created", repository, pull_request: { number: 9 }, comment: { body: "@shrike", author_association: "OWNER" } })).toMatchObject({ pr: 9, reviews: [] });
   });
 
   test("repository_dispatch carries the job in client_payload and trusts the repository", () => {
-    const payload = { action: "shrike", repository, client_payload: { owner: "evil", repo: "other", pr: 3, trigger: "comment", skills: ["cleanup"] } };
-    expect(jobFromEvent("repository_dispatch", payload)).toEqual({ owner: "forloopcodes", repo: "shrike", pr: 3, trigger: "comment", skills: ["cleanup"], installationId: undefined });
+    const payload = { action: "shrike", repository, client_payload: { owner: "evil", repo: "other", repositoryId: 1, pr: 3, trigger: "comment", reviews: ["cleanup"] } };
+    expect(jobFromEvent("repository_dispatch", payload)).toEqual({ owner: "forloopcodes", repo: "shrike", repositoryId: 501, pr: 3, trigger: "comment", reviews: ["cleanup"], installationId: undefined });
     expect(() => jobFromEvent("repository_dispatch", { repository, client_payload: { pr: "3" } })).toThrow();
   });
 
-  test("unrelated events and missing repository are ignored", () => {
+  test("unrelated events and repositories without an id are ignored", () => {
     expect(jobFromEvent("push", { repository })).toBeNull();
     expect(jobFromEvent("pull_request", { action: "opened", pull_request: { number: 1 } })).toBeNull();
+    expect(() => jobFromEvent("pull_request", { action: "opened", repository: { name: "x", owner: { login: "y" } }, pull_request: { number: 1 } })).toThrow();
   });
 });

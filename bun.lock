@@ -12,15 +12,14 @@
     "action": {
       "name": "@shrike/action",
       "dependencies": {
-        "@shrike/bot": "workspace:*",
+        "@shrike/core": "workspace:*",
         "octokit": "^5.0.0",
       },
     },
-    "bot": {
-      "name": "@shrike/bot",
+    "core": {
+      "name": "@shrike/core",
       "dependencies": {
         "@agentclientprotocol/sdk": "^1.4.0",
-        "hono": "^4.13.0",
         "octokit": "^5.0.0",
         "zod": "^4.6.0",
       },
@@ -81,7 +80,7 @@
 
     "@shrike/action": ["@shrike/action@workspace:action"],
 
-    "@shrike/bot": ["@shrike/bot@workspace:bot"],
+    "@shrike/core": ["@shrike/core@workspace:core"],
 
     "@types/aws-lambda": ["@types/aws-lambda@8.10.163", "", {}, "sha512-+4zuoEB3S8RIhimtOFT7zAEk2SbpwrKjjGl9CyYnQR6k08uynxfauIIB0pDU1ssr05F8oyGiETwpn+8eXZMqPw=="],
 
@@ -96,8 +95,6 @@
     "bun-types": ["bun-types@1.4.2", "", { "dependencies": { "@types/node": "*" } }, "sha512-bxV1FgK7yBIzjRe5zBozIM4Bem11ZJcCXSrjWRG3YWLt8yFDePu4cLjpebO8OvPeIE9trbyPF4fuj3Cia4Fj3w=="],
 
     "content-type": ["content-type@3.1.0", "", {}, "sha512-z26wZR7iXahgpSK7XgnB4IbRVmUNSODvsX9qC9TAru7AcWGiqn5YKy+OH3PLRrwyAnewykKhCqnD+VV3a8uT8Q=="],
-
-    "hono": ["hono@4.13.7", "", {}, "sha512-c8/gF9ac8Y78/agExVocyLevgR+JlpNB444Py0FSX8pJoPdYUfUzRcXtYEYGwt6l19qIlVZPN5Mfsw9jFShmQQ=="],
 
     "json-with-bigint": ["json-with-bigint@3.5.12", "", {}, "sha512-uwbF/wSSuOgC7qqlq27Xp5B6a2MHVug3t0idZdTqu0JnlFvgJuH7ju+KAk/J06C7GfhoYy2gnb9wz2INqcne7w=="],
 

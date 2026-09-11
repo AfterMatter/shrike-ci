@@ -1,5 +1,5 @@
 {
-  "name": "@shrike/bot",
+  "name": "@shrike/core",
   "private": true,
   "type": "module",
   "exports": {
@@ -8,7 +8,6 @@
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "^1.4.0",
-    "hono": "^4.13.0",
     "octokit": "^5.0.0",
     "zod": "^4.6.0"
   }

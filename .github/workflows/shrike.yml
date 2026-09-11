@@ -20,8 +20,9 @@ jobs:
       pull-requests: write
       checks: write
       issues: write
+      id-token: write
     steps:
       - uses: actions/checkout@v4
       - uses: ./action
         with:
-          skills: code-review, slop-review, security-review
+          api_url: ${{ vars.SHRIKE_API_URL }}

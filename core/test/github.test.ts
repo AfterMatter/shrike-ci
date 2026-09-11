@@ -61,7 +61,7 @@ function fakeOctokit(calls: Call[], overrides: Record<string, (args: Record<stri
   } as unknown as Octokit;
 }
 
-const job = { owner: "o", repo: "r", pr: 2, trigger: "pull_request" as const, skills: [] };
+const job = { owner: "o", repo: "r", pr: 2, trigger: "pull_request" as const, reviews: [] };
 
 describe("PullRequestClient", () => {
   test("load builds diff and commentable lines from listFiles", async () => {

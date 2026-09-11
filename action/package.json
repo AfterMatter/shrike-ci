@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "dependencies": {
-    "@shrike/bot": "workspace:*",
+    "@shrike/core": "workspace:*",
     "octokit": "^5.0.0"
   }
 }

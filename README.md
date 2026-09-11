@@ -1,10 +1,12 @@
-# Shrike
+# Shrike CI
 
-Shrike is to PRs as Linear is to Issues. This repository holds the bot, its skills and the GitHub Action. Every pull request gets reviewed by a sequence of skills, one agent session per skill, in the order you configure.
+Shrike is to PRs as Linear is to Issues. This repository is the open source runner: the review engine and the GitHub Action that runs it inside your own CI. Which reviews run, their instructions, the model and the session mode are configured on the Shrike website and fetched at run time, so the workflow file carries no settings.
 
 ## Add Shrike to a repository
 
-Create `.github/workflows/shrike.yml`:
+1. Sign in on the Shrike website with GitHub and open the repository. The page shows the API URL and lets you pick the reviews.
+2. Add a repository variable `SHRIKE_API_URL` with that URL.
+3. Create `.github/workflows/shrike.yml`:
 
 ```yaml
 name: Shrike
@@ -29,90 +31,52 @@ jobs:
       pull-requests: write
       checks: write
       issues: write
+      id-token: write
     steps:
       - uses: actions/checkout@v4
       - uses: AfterMatter/shrike-ci/action@main
         with:
-          skills: code-review, slop-review, security-review
+          api_url: ${{ vars.SHRIKE_API_URL }}
 ```
 
-That is the whole install. With no secrets the `acp` backend runs OpenCode on a free OpenCode Zen model. To use a paid provider set the model and the provider key:
-
-```yaml
-      - uses: AfterMatter/shrike-ci/action@main
-        env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-        with:
-          model: anthropic/claude-sonnet-4-5
-```
+`id-token: write` lets the job mint a GitHub OpenID Connect token. The Action sends it to the API, which verifies it against GitHub's public keys and answers with the settings and review instructions of exactly that repository. No secret is stored in the repository. To use a paid provider add its key to the job environment, for example `ANTHROPIC_API_KEY`, and pick the model on the website.
 
 ### What happens on a pull request
 
-1. A sticky `Shrike` comment lists every skill and its status, updated after each one.
-2. Each skill opens its own agent session with the repository checked out at the PR head, the full diff, and the skill's instructions.
-3. Each skill posts one review with inline comments on changed lines, findings outside the diff in the review body, and one check run named `shrike/<skill>`.
-4. One JSON report per skill is written to the `reports` output directory.
+1. The Action asks the API for the repository's settings and the instructions of the reviews to run.
+2. A sticky `Shrike` comment lists every review and its status, updated after each one.
+3. Each review gets the repository checked out at the PR head, the full diff and its instructions, in a fresh agent session or in the shared session when that mode is on.
+4. Each review posts one pull request review with inline comments on changed lines, findings outside the diff in the review body, and one check run named `shrike/<review>`.
+5. Every finished review is reported back to the API so the website shows history and cost. One JSON report per review is also written to the `reports` output directory.
 
 ### Triggers
 
 | Event | Behaviour |
 | --- | --- |
-| PR opened, reopened, synchronize, ready for review | runs the configured skills in order |
-| Comment `@shrike` on a PR | runs the configured skills |
-| Comment `@shrike security-review cleanup` | runs only those skills, in that order |
+| PR opened, reopened, synchronize, ready for review | runs the configured reviews in order |
+| Comment `@shrike` on a PR | runs the configured reviews |
+| Comment `@shrike security-review cleanup` | runs only those reviews, in that order |
 | `repository_dispatch` type `shrike` | runs the job sent by the Shrike GitHub App |
 
-Draft pull requests are skipped until marked ready for review.
+Draft pull requests are skipped until marked ready for review. Pull requests from forks get a read only token, so results cannot be posted for them with the default token.
 
 ### Action inputs
 
 | Input | Default | Meaning |
 | --- | --- | --- |
-| `skills` | `code-review, slop-review, security-review` | ordered skill names |
-| `backend` | `acp` | agent backend |
-| `model` | backend default (`opencode/big-pickle`) | `provider/model` id |
+| `api_url` | required | Shrike API base URL from the website |
 | `github_token` | `${{ github.token }}` | token used to read the PR and post results |
 | `opencode_version` | pinned | OpenCode CLI version for the `acp` backend |
-
-Pull requests from forks get a read only token, so results cannot be posted for them with the default token.
-
-## Skills
-
-Built in skills live in [`skills/`](skills): `code-review`, `slop-review`, `security-review`, `cleanup`, `react-doctor`, `suggest-changes`. A skill is a directory with a `SKILL.md` following the [Agent Skills](https://agentskills.io/specification) format: `name` and `description` in the frontmatter, review instructions in the body. The runner appends the PR context and the JSON output contract.
-
-A repository can add or override skills in `.shrike/skills/<name>/SKILL.md`. Repository skills take precedence over built in ones with the same name.
-
-## GitHub App webhook (optional)
-
-The App is the central trigger for the dashboard and lets one server fan out to many repositories. Register a GitHub App with:
-
-- Webhook URL: `https://<host>/webhooks`, with a webhook secret
-- Repository permissions: Contents read and write, Pull requests read and write, Checks read and write, Issues read and write, Metadata read
-- Subscribe to events: Pull request, Issue comment, Pull request review comment
-
-Run the server:
-
-```bash
-GITHUB_APP_ID=... GITHUB_APP_PRIVATE_KEY="$(cat key.pem)" GITHUB_WEBHOOK_SECRET=... bun run bot
-```
-
-| Variable | Default | Meaning |
-| --- | --- | --- |
-| `SHRIKE_RUNNER` | `actions` | `actions` sends a `repository_dispatch` to the repository's workflow, `local` runs skills on this machine |
-| `SHRIKE_SKILLS` | built in default | skill order for `local` runs |
-| `SHRIKE_BACKEND` | `acp` | backend for `local` runs |
-| `SHRIKE_MODEL` | backend default | model for `local` runs |
-| `SHRIKE_WORKDIR` | `.shrike/work` | clone directory for `local` runs |
-| `PORT` | `3000` | listen port |
 
 ## Layout
 
 ```
-bot/        webhook, runner, skill loader, backends/acp (temporary)
-skills/     built in SKILL.md files
-action/     GitHub Action wrapper around the runner
-documentation/  layout, agent harness contract and swap plan, phase status
+core/       review engine: job model, prompt, report contract, diff, checkout, GitHub client, runner, settings client, backends/acp
+action/     composite GitHub Action around the engine
+documentation/  layout, agent harness contract and swap plan, roadmap
 ```
+
+The hosted API, the website, the review instructions and the GitHub App webhook live in the private `shrike` repository, which consumes `core/` from here.
 
 ## Develop
 

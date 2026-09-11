@@ -2,9 +2,9 @@
 
 ## Naming
 
-Code review, slop review and security review are internal Shrike features. Shrike writes, tests and hardens them. A skill is what a repository adds itself, today under `.shrike/skills/`, later from a repository URL.
+Code review, slop review and security review are internal Shrike features. Shrike writes, tests and hardens them. Their instructions live in `shrike/reviews/<name>/SKILL.md` and are served to runners by the API, so a fix ships to every repository without a workflow change. A skill is what a repository adds itself, later from a repository URL through the website.
 
-Both load through the same `SKILL.md` loader and run through the same runner, which is the right mechanics. The names are wrong: the Action input is `skills` and the built-in directory is `skills/`. They become `reviews` when settings move to the backend in phase 3, so nothing is renamed twice.
+Both will load through the same loader and run through the same runner. Everything user facing says `reviews`; the `SKILL.md` file name stays because it follows the Agent Skills format.
 
 ## Shipped
 

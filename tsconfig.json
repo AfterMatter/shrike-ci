@@ -13,5 +13,5 @@
     "skipLibCheck": true,
     "noEmit": true
   },
-  "include": ["bot/src", "bot/test", "action/src"]
+  "include": ["core/src", "core/test", "action/src"]
 }

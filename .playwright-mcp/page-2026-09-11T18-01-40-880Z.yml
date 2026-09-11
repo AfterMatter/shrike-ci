@@ -1,0 +1,4 @@
+- main [ref=e3]:
+  - heading "Shrike" [level=1] [ref=e4]
+  - paragraph [ref=e5]: Shrike reviews every pull request with a coding agent and reports what it finds on the diff.
+  - button "Sign in with GitHub" [ref=e6] [cursor=pointer]

@@ -1,22 +1,13 @@
 name: Shrike
-description: Runs Shrike review skills on a pull request, one agent session per skill, in order.
+description: Runs Shrike reviews on a pull request with the settings and review instructions configured on the Shrike website.
 author: forloopcodes
 branding:
   icon: eye
   color: purple
 inputs:
-  skills:
-    description: Ordered, comma separated skill names. Empty means code-review, slop-review, security-review.
-    required: false
-    default: ""
-  backend:
-    description: Agent backend to run skills with.
-    required: false
-    default: acp
-  model:
-    description: Model id for the backend, for example opencode/big-pickle or anthropic/claude-sonnet-4-5.
-    required: false
-    default: ""
+  api_url:
+    description: Shrike API base URL shown on the website, usually the SHRIKE_API_URL repository variable. The job needs `permissions: id-token: write`.
+    required: true
   github_token:
     description: Token used to read the PR and post reviews, checks and comments.
     required: false
@@ -27,7 +18,7 @@ inputs:
     default: 1.18.30
 outputs:
   reports:
-    description: Directory containing one JSON report per skill run.
+    description: Directory containing one JSON report per review run.
     value: ${{ steps.run.outputs.reports }}
 runs:
   using: composite
@@ -43,12 +34,10 @@ runs:
         bun install --frozen-lockfile --production
         bun add -g "opencode-ai@${{ inputs.opencode_version }}"
         echo "${HOME}/.bun/bin" >> "${GITHUB_PATH}"
-    - name: Run skills
+    - name: Run reviews
       id: run
       shell: bash
       env:
-        INPUT_SKILLS: ${{ inputs.skills }}
-        INPUT_BACKEND: ${{ inputs.backend }}
-        INPUT_MODEL: ${{ inputs.model }}
+        INPUT_API_URL: ${{ inputs.api_url }}
         INPUT_GITHUB_TOKEN: ${{ inputs.github_token }}
       run: bun run "${GITHUB_ACTION_PATH}/src/run.ts"
