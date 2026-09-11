@@ -4,7 +4,7 @@ How the review engine talks to an agent, and how to replace OpenCode with any ot
 
 ## The contract
 
-`bot/src/backends/types.ts` is the whole interface. A `Backend` opens an `AgentSession` for a checkout and a model name. A session answers one prompt with the final text plus token and cost usage, and can be closed.
+`bot/src/backends/types.ts` is the whole interface. A `Backend` opens an `AgentSession` for a checkout, a model name, an optional `timeoutMs` and a log callback. A session answers one prompt with the final text plus `usage.tokens` and `usage.cost`, and can be closed.
 
 The runner opens one session per review, sends the prompt once, sends one retry prompt in the same session if the reply is not a valid report, and closes the session in a `finally`. No code outside `backends/` refers to a concrete backend: the rest of the repo goes through `getBackend` in `backends/index.ts` and the `Backend` and `AgentSession` types in `backends/types.ts`. Tests import a backend directly.
 

@@ -2,7 +2,7 @@
 
 ## Goal
 
-The workflow file stops carrying configuration. A user's workflow becomes checkout plus `uses: AfterMatter/shrike-ci/action@main` and nothing else. Which reviews run, which model, and the session mode are set on the website, and both the Action path and the App path read them from the backend.
+The workflow file stops carrying configuration. A user's workflow becomes checkout plus `uses: AfterMatter/shrike-ci/action@<release tag or commit sha>` and nothing else. Pinning to `main` would run every push to this repository in every user's CI unreviewed. Which reviews run, which model, and the session mode are set on the website, and both the Action path and the App path read them from the backend.
 
 ## Pieces
 
@@ -16,7 +16,7 @@ GitHub Actions can mint an OpenID Connect token for any job that declares `id-to
 
 1. The Action requests the token from GitHub with audience `shrike`.
 2. It sends the token to `GET /v1/settings`.
-3. The API verifies the signature against GitHub's public keys at `https://token.actions.githubusercontent.com/.well-known/jwks`, checks the audience, and reads `repository_id`.
+3. The API verifies the signature against GitHub's public keys at `https://token.actions.githubusercontent.com/.well-known/jwks`, checks the audience, checks that `sub` starts with `repo:<repository>:` for the `repository` claim, and reads `repository_id`. The token is scoped to the repository, not to a workflow or step, so it carries the authority of anything that runs in that repository's CI and never more than that: settings and run reports for its own repository.
 4. Settings for that repository come back, or defaults when the repository has never been set up. The Action keeps working for repositories that never visit the website.
 
 The App path already knows the repository from the installation webhook and looks up the same row by `repository_id`. Both paths call one function in `bot/src/settings.ts`, so they cannot drift.
@@ -43,7 +43,7 @@ The same token authenticates `POST /v1/runs`, which stores each review's report 
 
 ## Human setup
 
-- A Supabase project and its URL, anon key and service key.
+- A Supabase project and its URL, anon key (website reads under row level security only) and service key (API server only, never in the browser, a workflow or this repository).
 - A GitHub OAuth app for website login.
 - A public URL for the API, which is the same process as the webhook server.
 - The GitHub App from phase 2 for the App path.

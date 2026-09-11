@@ -20,7 +20,7 @@ Both load through the same `SKILL.md` loader and run through the same runner, wh
 - correctness review: does the change do what the pull request says, including edge cases and error paths.
 - regressions review: what existing behaviour the change can break, checked against callers and tests of the touched code.
 - tests review: do the tests constrain the change, would they fail if the feature were broken, what is missing.
-- before and after media: a comment with screenshots or recordings of the affected UI before and after the change. Needs the hosted runner from phase 3 because the app has to run somewhere.
+- before and after media: a comment with screenshots or recordings of the affected UI before and after the change. Needs the hosted runner from phase 3b because the app has to run somewhere.
 
 ## Hardening
 
