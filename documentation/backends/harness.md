@@ -11,7 +11,7 @@ How the review engine talks to an agent, and how to replace OpenCode with any ot
 - `AgentSession.prompt(text)` sends one message and resolves with the final assistant text plus `usage.tokens` and `usage.cost`.
 - `AgentSession.close()` releases everything the session holds.
 
-The runner opens one session per skill, sends the skill prompt once, sends one retry prompt in the same session if the reply is not a valid report, and closes the session in a `finally`. Nothing else in the repo imports from `backends/` except `getBackend` in `backends/index.ts`.
+The runner opens one session per skill, sends the skill prompt once, sends one retry prompt in the same session if the reply is not a valid report, and closes the session in a `finally`. No code outside `backends/` refers to a concrete backend: the rest of the repo goes through `getBackend` in `backends/index.ts` and the `Backend` and `AgentSession` types in `backends/types.ts`. Tests import a backend directly.
 
 ## What every backend must guarantee
 
@@ -21,7 +21,7 @@ The runner opens one session per skill, sends the skill prompt once, sends one r
 - A hung agent is killed after `timeoutMs` and `prompt` rejects.
 - `usage` is filled from the runtime's own accounting, zero if it has none.
 
-`bot/test/acp.test.ts` checks the first two guarantees live. A new backend copies that test with its own gate variable.
+`bot/test/acp.test.ts` checks read only tools, no leaked secrets and non-zero usage live. A new backend copies that test with its own gate variable.
 
 ## Adding a backend
 
