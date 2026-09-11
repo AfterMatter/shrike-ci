@@ -1,0 +1,9 @@
+{
+  "name": "@shrike/action",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@shrike/bot": "workspace:*",
+    "octokit": "^5.0.0"
+  }
+}

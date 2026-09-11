@@ -1,0 +1,15 @@
+{
+  "name": "shrike",
+  "private": true,
+  "type": "module",
+  "workspaces": ["bot", "action"],
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "bun test",
+    "bot": "bun run bot/src/index.ts"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.3.0",
+    "typescript": "^5.9.0"
+  }
+}

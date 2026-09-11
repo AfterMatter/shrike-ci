@@ -1,0 +1,34 @@
+import { describe, expect, test } from "bun:test";
+import { parseReport } from "../src/report";
+
+const valid = { summary: "fine", verdict: "pass" as const, findings: [] };
+
+describe("parseReport", () => {
+  test("reads the fenced json block", () => {
+    expect(parseReport(`Here you go:\n\`\`\`json\n${JSON.stringify(valid)}\n\`\`\``)).toEqual(valid);
+    expect(parseReport(`\`\`\`\n${JSON.stringify(valid)}\n\`\`\`\n`)).toEqual(valid);
+  });
+
+  test("uses the last fenced block when several exist", () => {
+    const text = `\`\`\`json\n{"summary":"draft","verdict":"warn"}\n\`\`\`\nfinal:\n\`\`\`json\n${JSON.stringify(valid)}\n\`\`\``;
+    expect(parseReport(text)).toEqual(valid);
+  });
+
+  test("falls back to bare json", () => {
+    expect(parseReport(`Report: ${JSON.stringify(valid)} done`)).toEqual(valid);
+  });
+
+  test("defaults findings to empty and rejects bad shapes", () => {
+    expect(parseReport('```json\n{"summary":"x","verdict":"fail"}\n```').findings).toEqual([]);
+    expect(() => parseReport("no json here")).toThrow(/not valid JSON/);
+    expect(() => parseReport('```json\n{"summary":"","verdict":"pass"}\n```')).toThrow();
+    expect(() => parseReport('```json\n{"summary":"x","verdict":"maybe"}\n```')).toThrow();
+    expect(() => parseReport('```json\n{"summary":"x","verdict":"pass","findings":[{"path":"a","line":0,"severity":"info","title":"t","body":"b"}]}\n```')).toThrow();
+    expect(() => parseReport('```json\n{"summary":"x","verdict":"pass","findings":[{"path":"a","line":1,"severity":"high","title":"t","body":"b"}]}\n```')).toThrow();
+  });
+
+  test("keeps optional range and suggestion", () => {
+    const finding = { path: "a.ts", line: 5, startLine: 3, severity: "warning" as const, title: "t", body: "b", suggestion: "x" };
+    expect(parseReport(`\`\`\`json\n${JSON.stringify({ ...valid, findings: [finding] })}\n\`\`\``).findings[0]).toEqual(finding);
+  });
+});
