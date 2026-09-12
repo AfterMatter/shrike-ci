@@ -10,6 +10,17 @@ const SECRET_ENV = ["GITHUB_TOKEN", "INPUT_GITHUB_TOKEN", "GITHUB_APP_PRIVATE_KE
 const REVIEW_PERMISSIONS = { read: "allow", glob: "allow", grep: "allow", list: "allow", lsp: "allow", todowrite: "allow", edit: "deny", bash: "deny", task: "deny", webfetch: "deny", websearch: "deny", external_directory: "deny", question: "deny", skill: "deny" };
 const FIX_PERMISSIONS = { ...REVIEW_PERMISSIONS, edit: "allow", bash: "allow" };
 const PLAYWRIGHT_MCP = "@playwright/mcp@0.0.80";
+const PLAYWRIGHT_CORE = "playwright-core@1.63.0-alpha-2026-08-31";
+
+const installFfmpeg = (log: (line: string) => void): Promise<void> =>
+  new Promise((resolve, reject) => {
+    const child = spawn("bunx", [PLAYWRIGHT_CORE, "install", "ffmpeg"], { stdio: ["ignore", "pipe", "pipe"], shell: process.platform === "win32" });
+    const relay = (chunk: Buffer) => chunk.toString().split("\n").filter((line) => line.trim()).forEach((line) => log(`playwright: ${line.trimEnd()}`));
+    child.stdout.on("data", relay);
+    child.stderr.on("data", relay);
+    child.on("error", reject);
+    child.on("close", (code) => (code === 0 ? resolve() : reject(new Error(`could not install ffmpeg for the video recording (exit ${code})`))));
+  });
 
 export const opencodeConfig = (model: string, write: boolean, captureDir?: string): Record<string, unknown> => ({
   share: "disabled",
@@ -35,6 +46,7 @@ export const acpBackend: Backend = {
   defaultModel: "opencode/big-pickle",
   async open({ cwd, model = acpBackend.defaultModel, timeoutMs = DEFAULT_TIMEOUT_MS, write = false, captureDir, log }: SessionOptions) {
     const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !SECRET_ENV.includes(key)));
+    if (captureDir) await installFfmpeg(log);
     const child = spawn(process.env.OPENCODE_BIN ?? "opencode", ["acp", "--cwd", cwd], {
       cwd,
       stdio: ["pipe", "pipe", "pipe"],
