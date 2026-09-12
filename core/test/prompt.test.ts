@@ -96,6 +96,7 @@ describe("capture prompts", () => {
     expect(before).toContain("3. Call browser_stop_video.");
     expect(before).toContain("A page that answers with an error or does not exist yet is still a shot: screenshot it as it is");
     expect(before).toContain("# Shots\n1. home: http://localhost:5173/\n   Steps: wait for the list\n2. settings: http://localhost:5173/#/settings\n\n# Output contract");
+    expect(buildCaptureShotsPrompt("before", "http://localhost:5173/", shots, "/tmp/shots")).toContain("2. settings: http://localhost:5173/#/settings");
     expect(before).toContain('{"taken": ["home"]}');
     expect(before).not.toContain("Take the same shots again");
     const after = buildCaptureShotsPrompt("after", "http://localhost:5173", shots, "/tmp/shots");

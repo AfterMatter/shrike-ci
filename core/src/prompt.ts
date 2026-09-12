@@ -112,7 +112,7 @@ export function buildCaptureShotsPrompt(side: Side, url: string, shots: Shot[], 
 A page that answers with an error or does not exist yet is still a shot: screenshot it as it is, the reviewer wants to see the difference. Skip a shot only when the browser cannot reach the url at all or a step cannot be done, and go on. Never edit files or run commands.
 
 # Shots
-${list(shots, (shot, index) => `${index + 1}. ${shot.name}: ${url}${shot.path}${shot.steps ? `\n   Steps: ${shot.steps}` : ""}`)}
+${list(shots, (shot, index) => `${index + 1}. ${shot.name}: ${url.replace(/\/$/, "")}${shot.path}${shot.steps ? `\n   Steps: ${shot.steps}` : ""}`)}
 
 # Output contract
 Finish with exactly one \`\`\`json fenced block and no text after it:
