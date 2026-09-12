@@ -13,7 +13,10 @@ export const settingsSchema = z.strictObject({
   shriken: z.boolean().default(true),
   autofix: z.enum(["off", "ci", "all"]).default("off"),
   autofixLimit: z.number().int().min(1).max(20).default(5),
-});
+  capture: z.boolean().default(false),
+  captureCommand: z.string().max(500).default(""),
+  captureUrl: z.union([z.literal(""), z.url({ protocol: /^https?$/ })]).default(""),
+}).refine((settings) => !settings.capture || (settings.captureCommand.trim() !== "" && settings.captureUrl !== ""), { message: "capture needs the command that serves the app and the url it answers on" });
 
 export const reviewSchema = z.object({
   name: z

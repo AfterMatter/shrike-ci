@@ -12,7 +12,7 @@ function fakeFetch(calls: Call[], reply: (url: string) => Response) {
 
 describe("settings schema", () => {
   test("empty settings resolve to the default reviews and fresh sessions", () => {
-    expect(resolveSettings(undefined)).toEqual({ reviews: DEFAULT_REVIEWS, backend: "acp", session: "fresh", shriken: true, autofix: "off", autofixLimit: 5 });
+    expect(resolveSettings(undefined)).toEqual({ reviews: DEFAULT_REVIEWS, backend: "acp", session: "fresh", shriken: true, autofix: "off", autofixLimit: 5, capture: false, captureCommand: "", captureUrl: "" });
     expect(resolveSettings({ reviews: [] }).reviews).toEqual(DEFAULT_REVIEWS);
   });
 
@@ -21,7 +21,7 @@ describe("settings schema", () => {
   });
 
   test("configured values win and unknown keys are rejected", () => {
-    expect(resolveSettings({ reviews: ["cleanup"], model: "x/y", session: "shared", shriken: false, autofix: "ci", autofixLimit: 3 })).toEqual({
+    expect(resolveSettings({ reviews: ["cleanup"], model: "x/y", session: "shared", shriken: false, autofix: "ci", autofixLimit: 3, capture: true, captureCommand: "bun run dev", captureUrl: "http://localhost:5173" })).toEqual({
       reviews: ["cleanup"],
       backend: "acp",
       model: "x/y",
@@ -29,6 +29,9 @@ describe("settings schema", () => {
       shriken: false,
       autofix: "ci",
       autofixLimit: 3,
+      capture: true,
+      captureCommand: "bun run dev",
+      captureUrl: "http://localhost:5173",
     });
     expect(() => settingsSchema.parse({ autofix: "always" })).toThrow();
     expect(() => settingsSchema.parse({ autofixLimit: 0 })).toThrow();
@@ -39,6 +42,17 @@ describe("settings schema", () => {
     expect(() => settingsSchema.parse({ session: "hot" })).toThrow();
     expect(() => settingsSchema.parse({ reviews: ["Code Review"] })).toThrow();
     expect(() => settingsSchema.parse({ model: "" })).toThrow();
+  });
+
+  test("capture needs both the command and a real url, and neither is needed while it is off", () => {
+    expect(() => settingsSchema.parse({ capture: true })).toThrow(/capture needs the command/);
+    expect(() => settingsSchema.parse({ capture: true, captureCommand: " ", captureUrl: "http://localhost:5173" })).toThrow(/capture needs the command/);
+    expect(() => settingsSchema.parse({ capture: true, captureCommand: "bun run dev" })).toThrow(/capture needs the command/);
+    expect(() => settingsSchema.parse({ capture: true, captureCommand: "bun run dev", captureUrl: "localhost:5173" })).toThrow();
+    expect(() => settingsSchema.parse({ capture: "yes" })).toThrow();
+    expect(() => settingsSchema.parse({ captureCommand: "x".repeat(501) })).toThrow();
+    expect(settingsSchema.parse({ capture: false, captureCommand: "", captureUrl: "" }).capture).toBe(false);
+    expect(settingsSchema.parse({ captureCommand: "bun run dev" }).capture).toBe(false);
   });
 });
 
@@ -87,7 +101,7 @@ describe("SettingsApi", () => {
     const result = await api.settings(["cleanup", "code-review"]);
     expect(calls[0]!.url).toBe("https://api.shrike.test/v1/settings?reviews=cleanup,code-review");
     expect((calls[0]!.init!.headers as Record<string, string>).authorization).toBe("Bearer oidc-jwt");
-    expect(result.settings).toEqual({ reviews: ["cleanup"], backend: "acp", session: "shared", shriken: true, autofix: "off", autofixLimit: 5 });
+    expect(result.settings).toEqual({ reviews: ["cleanup"], backend: "acp", session: "shared", shriken: true, autofix: "off", autofixLimit: 5, capture: false, captureCommand: "", captureUrl: "" });
     expect(result.reviews).toEqual([{ name: "cleanup", description: "d", body: "Rules." }]);
   });
 

@@ -1,6 +1,7 @@
-// Builds the prompts: a review session gets PR context, instructions and the
-// JSON contract; Shriken gets history and reports; autofix gets failures and findings.
+// Builds the prompts: reviews get PR context and the JSON contract, capture
+// plans and takes the shots, Shriken gets history and reports, autofix the failures.
 import type { Problems } from "./autofix";
+import { ABOUT, CAPTURE, shotFile, SIDES, videoFile, type Shot, type Side } from "./capture";
 import type { PullRequest, PullRequestHistory } from "./github";
 import type { ReviewRun } from "./runner";
 import type { AutofixMode, Review } from "./settings";
@@ -15,6 +16,11 @@ export const SHRIKEN_RETRY_PROMPT =
 
 export const AUTOFIX_RETRY_PROMPT =
   "Your last message did not contain the summary. Reply with one ```markdown fenced block: a first line of at most 70 characters saying what you changed, then one or two short paragraphs, and nothing after it.";
+
+export const CAPTURE_PLAN_RETRY_PROMPT =
+  'Your last message did not contain a valid plan. Reply with only one ```json fenced block {"shots": [{"name": "<lowercase-with-dashes>", "path": "/<route>", "steps": "<optional actions>"}]} with at most 6 shots, or {"shots": []} when nothing a browser shows changes, and nothing else.';
+
+export const CAPTURE_TAKEN_RETRY_PROMPT = 'Your last message did not say which shots you took. Reply with only one ```json fenced block {"taken": ["<name>", ...]} naming the shots whose screenshot you saved, and nothing else.';
 
 const clipDiff = (diff: string): string => (diff.length > DIFF_LIMIT ? `${diff.slice(0, DIFF_LIMIT)}\n(diff truncated, read the remaining files with your tools)` : diff);
 
@@ -70,8 +76,54 @@ ${clipDiff(pr.diff)}
 \`\`\``}`;
 }
 
+export function buildCapturePlanPrompt(pr: PullRequest, url: string): string {
+  return `You are Shrike, preparing before and after screenshots of pull request #${pr.number} of ${pr.owner}/${pr.repo} (${pr.head} -> ${pr.base}): ${pr.title}
+
+Description:
+${pr.body?.trim() || "(none)"}
+
+The repository is checked out at the pull request head in your working directory. The application will be served at ${url}. Read the diff at the end and any file you need with your tools. Do not modify files. Do not open the browser yet.
+
+Decide which pages a reviewer must see to judge this change visually. List at most 6 shots, each the route of a page whose rendering the diff changes and, when the change hides behind an interaction, the steps to reach it: open a dialog, pick a tab, hover a row. When the diff changes nothing a browser would show, such as tests, documentation, server code, build files or comments, answer with an empty list.
+
+# Output contract
+Finish with exactly one \`\`\`json fenced block and no text after it:
+{
+  "shots": [
+    { "name": "settings-dialog", "path": "/settings", "steps": "click Appearance in the rail" }
+  ]
+}
+Rules:
+- "name" is unique, lowercase letters, digits and dashes, at most 40 characters, and says what the page is.
+- "path" starts with / and is appended to ${url}; include the hash when the app routes by hash.
+- "steps" is optional plain English for what to do after the page loads and before the screenshot.
+
+# Diff
+\`\`\`diff
+${clipDiff(pr.diff)}
+\`\`\``;
+}
+
+export function buildCaptureShotsPrompt(side: Side, url: string, shots: Shot[]): string {
+  return `The application at ${url} now runs ${ABOUT[side]}.${side === "after" ? " Take the same shots again so every pair lines up." : ""} Use the playwright browser tools:
+1. Call browser_start_video with filename "${videoFile(side)}" and size { "width": 1280, "height": 800 }.
+2. For each shot below, in order: browser_navigate to its url, wait for the page to settle, follow its steps, then browser_take_screenshot with filename "${shotFile(side, "<name>")}" and no other options.
+3. Call browser_stop_video.
+When a page does not load or a step cannot be done, skip that shot and go on. Never edit files or run commands.
+
+# Shots
+${list(shots, (shot, index) => `${index + 1}. ${shot.name}: ${url}${shot.path}${shot.steps ? `\n   Steps: ${shot.steps}` : ""}`)}
+
+# Output contract
+Finish with exactly one \`\`\`json fenced block and no text after it:
+{"taken": ["${shots[0]?.name ?? "<name>"}"]}
+naming the shots whose screenshot you saved.`;
+}
+
 export function buildShrikenPrompt(pr: PullRequest, history: PullRequestHistory, runs: ReviewRun[]): string {
-  const reviews = runs.flatMap((run) => (run.report ? [{ name: run.review, report: run.report }] : []));
+  const reviews = runs.flatMap((run) => (run.report && run.review !== CAPTURE ? [{ name: run.review, report: run.report }] : []));
+  const capture = runs.find((run) => run.review === CAPTURE)?.report?.capture;
+  const screenshots = (capture?.shots ?? []).flatMap((shot) => SIDES.flatMap((side) => (shot[side] ? [{ alt: `${side} ${shot.name}`, url: shot[side]! }] : [])));
   return `You are Shriken, the summariser that runs after Shrike's reviews. You write the short summary a pull request reviewer reads before deciding.
 
 Repository: ${pr.owner}/${pr.repo}
@@ -97,6 +149,9 @@ ${list(history.issues, (i) => `- #${i.number} (${i.kind}, ${i.state}): ${i.title
 # Images in the description
 ${list(history.images, (i) => `- alt: ${i.alt || "(none)"}, url: ${i.url}`)}
 
+# Screenshots Shrike took before and after the change
+${list(screenshots, (i) => `- alt: ${i.alt}, url: ${i.url}`)}
+
 # Reviews
 ${list(reviews, ({ name, report }) => `## Review: ${name}
 Verdict: ${report.verdict}
@@ -114,7 +169,7 @@ Write the summary a reviewer reads before deciding: two or three paragraphs of p
 Between the paragraphs, show what the reviewer must see with at most three blocks in total, each on its own lines:
 - a \`\`\`diff block quoting at most 15 lines of the diff above that matter most, right after a sentence naming that file with a [file:<path>:<line>] token
 - a \`\`\`suggestion block copied from a finding, right after a sentence with that finding's token
-- an image of the description as ![alt](url) with a url from the list above, for example before and after screenshots; never any other url
+- an image as ![alt](url) with a url from the lists above, an image of the description or a before and after screenshot pair; never any other url
 Reference everything you mention with inline tokens so the website can link them:
 - [finding:<review>#<n>] the n-th finding of that review as numbered above, for example [finding:code-review#2]
 - [review:<name>] a whole review, for example [review:security-review]

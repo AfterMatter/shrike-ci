@@ -1,5 +1,5 @@
 // GitHub side of a run: load PR context and history, post reviews, keep
-// sticky comments and check runs, read the other checks and their job logs.
+// sticky comments and checks, read other checks and logs, publish media files.
 import { Octokit } from "octokit";
 import { commentableLines, renderPatch } from "./diff";
 import type { Job } from "./job";
@@ -23,10 +23,23 @@ export interface PullRequest {
   base: string;
   head: string;
   headSha: string;
+  baseSha: string;
   cloneUrl: string;
   fork: boolean;
+  private: boolean;
   files: PullRequestFile[];
   diff: string;
+}
+
+export interface PushIdentity {
+  token: string;
+  name: string;
+  email: string;
+}
+
+export interface MediaFile {
+  path: string;
+  content: Buffer;
 }
 
 export interface CheckRun {
@@ -149,7 +162,10 @@ export function splitFindings(report: Report, files: PullRequestFile[]): { inlin
 }
 
 export class PullRequestClient {
-  constructor(private readonly octokit: Octokit) {}
+  constructor(
+    private readonly octokit: Octokit,
+    private readonly withToken: (token: string) => Octokit = (auth) => new Octokit({ auth }),
+  ) {}
 
   async load(job: Job): Promise<PullRequest> {
     const { owner, repo, pr: pull_number } = job;
@@ -165,8 +181,10 @@ export class PullRequestClient {
       base: data.base.ref,
       head: data.head.ref,
       headSha: data.head.sha,
+      baseSha: data.base.sha,
       cloneUrl: data.base.repo.clone_url,
       fork: (data.head.repo?.full_name ?? "") !== data.base.repo.full_name,
+      private: data.base.repo.private,
       files: changed.map((f) => ({ path: f.filename, status: f.status, additions: f.additions, deletions: f.deletions, lines: commentableLines(f.patch ?? "") })),
       diff: changed.map((f) => renderPatch(f.filename, f.previous_filename, f.status, f.patch)).join("\n"),
     };
@@ -215,7 +233,7 @@ export class PullRequestClient {
   }
 
   async jobLog(pr: PullRequest, jobId: number, token?: string): Promise<string> {
-    const octokit = token ? new Octokit({ auth: token }) : this.octokit;
+    const octokit = token ? this.withToken(token) : this.octokit;
     const { data } = await octokit.rest.actions.downloadJobLogsForWorkflowRun({ owner: pr.owner, repo: pr.repo, job_id: jobId });
     return typeof data === "string" ? data : "";
   }
@@ -226,6 +244,34 @@ export class PullRequestClient {
     const existing = (await this.octokit.paginate(this.octokit.rest.issues.listComments, { owner, repo, issue_number, per_page: 100 })).find((c) => c.body?.startsWith(marker));
     const { id, html_url: url } = existing ? (await write(existing.id, body), existing) : (await this.octokit.rest.issues.createComment({ owner, repo, issue_number, body: `${marker}\n${body}` })).data;
     return { id, url, update: async (next) => void (await write(id, next)) };
+  }
+
+  async publish(pr: PullRequest, branch: string, files: MediaFile[], message: string, identity: PushIdentity): Promise<string> {
+    const { owner, repo } = pr;
+    const octokit = this.withToken(identity.token);
+    const ref = `heads/${branch}`;
+    const head = await octokit.rest.git.getRef({ owner, repo, ref }).then(
+      ({ data }) => data.object.sha,
+      (error: { status?: number }) => {
+        if (error.status === 404) return null;
+        throw error;
+      },
+    );
+    const parent = head ? (await octokit.rest.git.getCommit({ owner, repo, commit_sha: head })).data : null;
+    const tree = await Promise.all(
+      files.map(async (file) => ({
+        path: file.path,
+        mode: "100644" as const,
+        type: "blob" as const,
+        sha: (await octokit.rest.git.createBlob({ owner, repo, content: file.content.toString("base64"), encoding: "base64" })).data.sha,
+      })),
+    );
+    const { data: created } = await octokit.rest.git.createTree({ owner, repo, tree, ...(parent ? { base_tree: parent.tree.sha } : {}) });
+    const author = { name: identity.name, email: identity.email };
+    const { data: commit } = await octokit.rest.git.createCommit({ owner, repo, message, tree: created.sha, parents: head ? [head] : [], author, committer: author });
+    if (head) await octokit.rest.git.updateRef({ owner, repo, ref, sha: commit.sha });
+    else await octokit.rest.git.createRef({ owner, repo, ref: `refs/${ref}`, sha: commit.sha });
+    return commit.sha;
   }
 
   async history(pr: PullRequest): Promise<PullRequestHistory> {

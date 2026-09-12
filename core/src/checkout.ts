@@ -24,8 +24,10 @@ export function git(dir: string, args: string[]): Promise<string> {
   });
 }
 
+export const authArgs = (token?: string): string[] => (token ? ["-c", `http.extraheader=AUTHORIZATION: basic ${Buffer.from(`x-access-token:${token}`).toString("base64")}`] : []);
+
 export async function ensureCheckout({ dir, cloneUrl, pr, headSha, token }: CheckoutTarget, log: (line: string) => void): Promise<void> {
-  const auth = token ? ["-c", `http.extraheader=AUTHORIZATION: basic ${Buffer.from(`x-access-token:${token}`).toString("base64")}`] : [];
+  const auth = authArgs(token);
   const cloned = await access(join(dir, ".git")).then(() => true, () => false);
   if (!cloned) {
     await mkdir(dir, { recursive: true });

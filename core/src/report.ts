@@ -1,5 +1,5 @@
 // Structured report every review must produce as JSON, the summary Shriken
-// writes with its scores and reference tokens, all read from agent output.
+// writes with scores and tokens, the capture record, all read from agent output.
 import { z } from "zod";
 
 const REFERENCE = /\[(finding|review|commit|issue|file):([^[\]\s]+)\]/g;
@@ -19,17 +19,24 @@ export const findingSchema = z.object({
   suggestion: z.string().optional(),
 });
 
+export const captureSchema = z.object({
+  shots: z.array(z.object({ name: z.string().min(1), path: z.string().min(1), before: z.string().optional(), after: z.string().optional() })),
+  videos: z.object({ before: z.string().optional(), after: z.string().optional() }),
+});
+
 export const reportSchema = z.object({
   summary: z.string().min(1),
   verdict: z.enum(["pass", "warn", "fail"]),
   findings: z.array(findingSchema).default([]),
   scores: z.record(z.string(), z.number().int().min(0).max(100)).optional(),
+  capture: captureSchema.optional(),
 });
 
 const scoresSchema = z.object({ scores: z.record(z.string(), z.number().int().min(0).max(100)) });
 
 export type Finding = z.infer<typeof findingSchema>;
 export type Report = z.infer<typeof reportSchema>;
+export type Capture = z.infer<typeof captureSchema>;
 
 const withoutNulls = (value: unknown): unknown =>
   Array.isArray(value)
@@ -42,19 +49,21 @@ const withoutNulls = (value: unknown): unknown =>
         )
       : value;
 
-export function parseReport(text: string): Report {
+export function parseJson<T>(text: string, schema: z.ZodType<T>, what = "report"): T {
   const blocks = [...text.matchAll(/```(?:json)?\s*\n([\s\S]*?)\n\s*```/g)].map((m) => m[1]!);
   const candidates = blocks.length ? blocks.reverse() : [text.slice(text.indexOf("{"), text.lastIndexOf("}") + 1)];
   let lastError = "no JSON block found";
   for (const candidate of candidates) {
     try {
-      return reportSchema.parse(withoutNulls(JSON.parse(candidate)));
+      return schema.parse(withoutNulls(JSON.parse(candidate)));
     } catch (error) {
       lastError = error instanceof Error ? error.message : String(error);
     }
   }
-  throw new Error(`report is not valid JSON: ${lastError}`);
+  throw new Error(`${what} is not valid JSON: ${lastError}`);
 }
+
+export const parseReport = (text: string): Report => parseJson(text, reportSchema);
 
 export function parseShriken(text: string): string {
   const open = text.lastIndexOf("```markdown");

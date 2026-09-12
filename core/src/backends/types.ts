@@ -16,6 +16,7 @@ export interface SessionOptions {
   model?: string;
   timeoutMs?: number;
   write?: boolean;
+  captureDir?: string;
   log: (line: string) => void;
 }
 

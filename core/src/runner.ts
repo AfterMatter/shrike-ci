@@ -1,12 +1,16 @@
 // Runs a job: the requested reviews in order, fresh or shared session, the
-// Shriken summary, then autofix when it is on. Posts status after each step.
+// capture, the Shriken summary, then autofix when on. Posts status after each step.
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { attemptsAtHead, AUTOFIX, commitAndPush, headMessages, modeOf, problemsOf, reviewsGreen, waitForChecks, type AutofixDeps } from "./autofix";
 import type { AgentSession, Backend } from "./backends";
+import { baseWorktree, CAPTURE, CAPTURE_MARKER, captureHeadline, captureOf, collect, MEDIA_BRANCH, mediaPath, parsePlan, parseTaken, renderCapture, serve, type CaptureDeps, type Side } from "./capture";
 import { ensureCheckout } from "./checkout";
-import { conclusionOf, headline, STATUS_MARKER, type CheckHandle, type PullRequest, type PullRequestClient } from "./github";
+import { conclusionOf, headline, STATUS_MARKER, type CheckHandle, type MediaFile, type PullRequest, type PullRequestClient } from "./github";
 import type { Job } from "./job";
-import { AUTOFIX_RETRY_PROMPT, buildAutofixPrompt, buildPrompt, buildShrikenPrompt, RETRY_PROMPT, SHRIKEN_RETRY_PROMPT } from "./prompt";
-import { parseReport, parseShriken, parseShrikenScores, shrikenReferences, type Report } from "./report";
+import { AUTOFIX_RETRY_PROMPT, buildAutofixPrompt, buildCapturePlanPrompt, buildCaptureShotsPrompt, buildPrompt, buildShrikenPrompt, CAPTURE_PLAN_RETRY_PROMPT, CAPTURE_TAKEN_RETRY_PROMPT, RETRY_PROMPT, SHRIKEN_RETRY_PROMPT } from "./prompt";
+import { parseReport, parseShriken, parseShrikenScores, shrikenReferences, type Capture, type Report } from "./report";
 import type { AutofixMode, Review, Settings } from "./settings";
 
 export interface Turn {
@@ -55,11 +59,15 @@ export interface RunDeps {
   log: (line: string) => void;
   onRun?: (run: ReviewRun, pr: PullRequest) => Promise<void>;
   autofix?: AutofixDeps;
+  capture?: CaptureDeps;
 }
 
 type Opened = { session: AgentSession; followUp: boolean };
+type OpenOptions = { write?: boolean; captureDir?: string };
 
 export const SHRIKEN = "shriken";
+const RESERVED: Record<string, string> = { [SHRIKEN]: "shriken runs after the reviews, not as one", [CAPTURE]: "capture runs after the reviews, not as one", [AUTOFIX]: "autofix runs after the reviews, not as one" };
+const OWN = new Set([SHRIKEN, CAPTURE, AUTOFIX]);
 const PROMPT_KEEP = 20_000;
 const RANK: Record<Report["verdict"], number> = { pass: 0, warn: 1, fail: 2 };
 
@@ -84,7 +92,7 @@ const said = (run: ReviewRun, role: Turn["role"], text: string) => (run.transcri
 
 export function renderStatus(runs: ReviewRun[]): string {
   const rows = runs.map((run) => {
-    const result = run.status !== "done" || !run.report ? run.error ?? "" : run.review === SHRIKEN ? "summary written" : run.review === AUTOFIX ? headline(run.report.summary) : `${run.report.verdict}, ${run.report.findings.length} finding(s)`;
+    const result = run.status !== "done" || !run.report ? run.error ?? "" : run.review === SHRIKEN ? "summary written" : run.review === AUTOFIX || run.review === CAPTURE ? headline(run.report.summary) : `${run.report.verdict}, ${run.report.findings.length} finding(s)`;
     return `| ${run.review} | ${run.status} | ${result} | ${run.posted ? `[${run.review === SHRIKEN ? "summary" : "review"}](${run.posted.url})` : ""} |`;
   });
   return `## Shrike\n\n| Review | Status | Result | |\n| --- | --- | --- | --- |\n${rows.join("\n")}`;
@@ -113,7 +121,7 @@ export async function runJob(job: Job, deps: RunDeps): Promise<ReviewRun[]> {
   const model = deps.settings.model ?? deps.backend.defaultModel;
   const reviews = new Map((job.reviews.length ? job.reviews : deps.settings.reviews).map((name) => [name, deps.reviews.find((review) => review.name === name)]));
   const runs: ReviewRun[] = [...reviews].map(([review, loaded]) => {
-    const error = review === SHRIKEN ? "shriken runs after the reviews, not as one" : loaded ? undefined : "unknown review";
+    const error = RESERVED[review] ?? (loaded ? undefined : "unknown review");
     return { review, backend: deps.backend.name, model, status: error ? "error" : "queued", ...(error ? { error } : {}) };
   });
   const status = await deps.gh.stickyComment(pr, STATUS_MARKER, renderStatus(runs));
@@ -123,14 +131,14 @@ export async function runJob(job: Job, deps: RunDeps): Promise<ReviewRun[]> {
     if (line.startsWith("tool ") && current) said(current, "tool", line);
     deps.log(`[${current?.review ?? "?"}] ${line}`);
   };
-  const open = async (run: ReviewRun, write: boolean): Promise<Opened> => {
+  const open = async (run: ReviewRun, { write = false, captureDir }: OpenOptions): Promise<Opened> => {
     current = run;
-    if (write || deps.settings.session !== "shared") return { session: await deps.backend.open({ cwd: deps.cwd, model, write, log: heard }), followUp: false };
+    if (write || captureDir || deps.settings.session !== "shared") return { session: await deps.backend.open({ cwd: deps.cwd, model, write, captureDir, log: heard }), followUp: false };
     const followUp = shared !== undefined;
     shared ??= await deps.backend.open({ cwd: deps.cwd, model, log: heard });
     return { session: shared, followUp };
   };
-  const step = async (run: ReviewRun, work: (opened: (write?: boolean) => Promise<Opened>, check: CheckHandle) => Promise<void>) => {
+  const step = async (run: ReviewRun, work: (opened: (options?: OpenOptions) => Promise<Opened>, check: CheckHandle) => Promise<void>) => {
     run.status = "running";
     run.startedAt = new Date().toISOString();
     deps.log(`[${run.review}] starting with ${run.backend}/${run.model}${shared ? " in the shared session" : ""}`);
@@ -138,8 +146,8 @@ export async function runJob(job: Job, deps: RunDeps): Promise<ReviewRun[]> {
     const check = await deps.gh.startCheck(pr, run.review);
     let session: AgentSession | undefined;
     try {
-      await work(async (write = false) => {
-        const opened = await open(run, write);
+      await work(async (options = {}) => {
+        const opened = await open(run, options);
         session = opened.session;
         return opened;
       }, check);
@@ -148,7 +156,7 @@ export async function runJob(job: Job, deps: RunDeps): Promise<ReviewRun[]> {
       run.status = "error";
       run.error = error instanceof Error ? error.message : String(error);
       deps.log(`[${run.review}] failed: ${run.error}`);
-      await check.finish("failure", `Shrike could not complete this ${run.review === SHRIKEN ? "summary" : run.review === AUTOFIX ? "fix" : "review"}`, run.error);
+      await check.finish("failure", `Shrike could not complete this ${run.review === SHRIKEN ? "summary" : run.review === AUTOFIX ? "fix" : run.review === CAPTURE ? "capture" : "review"}`, run.error);
       if (session === shared) shared = undefined;
     } finally {
       if (session && session !== shared) await session.close().catch(() => {});
@@ -157,8 +165,52 @@ export async function runJob(job: Job, deps: RunDeps): Promise<ReviewRun[]> {
     await status.update(renderStatus(runs));
     await deps.onRun?.(run, pr).catch((error) => deps.log(`[${run.review}] could not report the run: ${error instanceof Error ? error.message : String(error)}`));
   };
+  const capture = async () => {
+    const run: ReviewRun = { review: CAPTURE, backend: deps.backend.name, model, status: "queued" };
+    runs.push(run);
+    await step(run, async (opened, check) => {
+      const { captureCommand: command, captureUrl: url } = deps.settings;
+      const done = async (summary: string, verdict: Report["verdict"], taken: Capture = { shots: [], videos: {} }) => {
+        run.report = { summary, verdict, findings: [], capture: taken };
+        await check.finish(verdict === "fail" ? "failure" : verdict === "warn" ? "neutral" : "success", headline(summary), summary);
+      };
+      const outputDir = await mkdtemp(join(tmpdir(), "shrike-capture-"));
+      try {
+        const { session } = await opened({ captureDir: outputDir });
+        const shots = await ask(run, session, buildCapturePlanPrompt(pr, url), CAPTURE_PLAN_RETRY_PROMPT, parsePlan, deps.log);
+        if (!shots.length) return done("Nothing a browser shows changes in this pull request.", "pass");
+        deps.log(`[capture] ${shots.length} shot(s) planned: ${shots.map((shot) => shot.name).join(", ")}`);
+        const files: MediaFile[] = [];
+        const take = async (side: Side, dir: string) => {
+          const stop = await serve(command, dir, url, (line) => deps.log(`[capture] ${line}`), deps.capture!.startTimeoutMs);
+          try {
+            await ask(run, session, buildCaptureShotsPrompt(side, url, shots), CAPTURE_TAKEN_RETRY_PROMPT, parseTaken, deps.log);
+          } finally {
+            await stop();
+          }
+          files.push(...(await collect(outputDir, side, shots)));
+        };
+        const base = await baseWorktree(deps.cwd, pr.baseSha, deps.token, (line) => deps.log(`[capture] ${line}`));
+        try {
+          await take("before", base.dir);
+        } finally {
+          await base.remove();
+        }
+        await take("after", deps.cwd);
+        if (!files.length) return done("The agent saved no screenshot on either side.", "fail");
+        const sha = await deps.gh.publish(pr, MEDIA_BRANCH, files.map((file) => ({ ...file, path: mediaPath(pr, file.path) })), `Shrike capture of #${pr.number} at ${pr.headSha.slice(0, 7)}`, await deps.capture!.identity());
+        const taken = captureOf(pr, sha, shots, files);
+        deps.log(`[capture] published ${files.length} file(s) to ${MEDIA_BRANCH} as ${sha.slice(0, 7)}`);
+        const { id, url: link } = await deps.gh.stickyComment(pr, CAPTURE_MARKER, renderCapture(pr, taken));
+        run.posted = { id, url: link };
+        await done(captureHeadline(taken), taken.shots.every((shot) => shot.before && shot.after) ? "pass" : "warn", taken);
+      } finally {
+        await rm(outputDir, { recursive: true, force: true }).catch(() => {});
+      }
+    });
+  };
   const fix = async (mode: AutofixMode, attempts: number) => {
-    const settled = runs.filter((run) => run.review !== SHRIKEN);
+    const settled = runs.filter((run) => !OWN.has(run.review));
     if (mode === "ci" && !reviewsGreen(settled)) return deps.log("[autofix] the reviews are not green, ci mode fixes nothing yet");
     const run: ReviewRun = { review: AUTOFIX, backend: deps.backend.name, model, status: "queued" };
     runs.push(run);
@@ -174,7 +226,7 @@ export async function runJob(job: Job, deps: RunDeps): Promise<ReviewRun[]> {
       const problems = await problemsOf(deps.gh, pr, mode, settled, checks, identity.token);
       if (problems.pending.length) return done(`Gave up waiting for ${problems.pending.map((check) => check.name).join(", ")}.`, "fail");
       if (!problems.failures.length && !problems.findings.length) return done("Everything is green, nothing to fix.", "pass");
-      const { session } = await opened(true);
+      const { session } = await opened({ write: true });
       const summary = await ask(run, session, buildAutofixPrompt(pr, mode, problems), AUTOFIX_RETRY_PROMPT, parseShriken, deps.log);
       const sha = await commitAndPush(deps.cwd, pr, mode, summary, identity, deps.autofix!.remote);
       if (sha === null) return done(`Changed nothing.\n\n${summary}`, "warn");
@@ -194,12 +246,16 @@ export async function runJob(job: Job, deps: RunDeps): Promise<ReviewRun[]> {
       });
     }
     const verdicts = runs.flatMap((run) => (run.report ? [run.report.verdict] : []));
+    if (deps.settings.capture) {
+      if (deps.capture) await capture();
+      else deps.log("[capture] skipped: this runner has no identity to publish the files with");
+    }
     if (deps.settings.shriken && verdicts.length) {
       const run: ReviewRun = { review: SHRIKEN, backend: deps.backend.name, model, status: "queued" };
       runs.push(run);
       await step(run, async (opened, check) => {
         const { session } = await opened();
-        const scored = runs.filter((own) => own.report).map((own) => own.review);
+        const scored = runs.filter((own) => own.report && own.review !== CAPTURE).map((own) => own.review);
         const { summary, scores } = await ask(run, session, buildShrikenPrompt(pr, await deps.gh.history(pr), runs), SHRIKEN_RETRY_PROMPT, (text) => {
           const parsed = parseShriken(text);
           if (!shrikenReferences(parsed).length) throw new Error("summary carries no references");

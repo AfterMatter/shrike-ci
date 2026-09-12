@@ -1,10 +1,54 @@
 import { expect, test } from "bun:test";
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { access, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { acpBackend } from "../src/backends/acp";
+import { acpBackend, opencodeConfig } from "../src/backends/acp";
 
 const live = process.env.SHRIKE_LIVE === "1" && Bun.which("opencode") !== null;
+const SERVER = join(import.meta.dir, "fixtures", "serve.ts");
+
+test("the opencode config denies writing and the browser for reviews, opens writing for fixes, and adds the playwright server for captures", () => {
+  const review = opencodeConfig("opencode/big-pickle", false);
+  expect(review).toEqual({
+    share: "disabled",
+    autoupdate: false,
+    model: "opencode/big-pickle",
+    permission: { read: "allow", glob: "allow", grep: "allow", list: "allow", lsp: "allow", todowrite: "allow", edit: "deny", bash: "deny", task: "deny", webfetch: "deny", websearch: "deny", external_directory: "deny", question: "deny", skill: "deny" },
+  });
+  expect(review).not.toHaveProperty("mcp");
+  expect(opencodeConfig("m", true).permission).toMatchObject({ edit: "allow", bash: "allow", webfetch: "deny" });
+  const capture = opencodeConfig("m", false, "/tmp/shots") as { permission: Record<string, string>; mcp: { playwright: { type: string; command: string[]; cwd: string; enabled: boolean } } };
+  expect(capture.permission).toMatchObject({ edit: "deny", bash: "deny", "playwright_*": "allow" });
+  expect(capture.mcp.playwright).toEqual({
+    type: "local",
+    command: ["bunx", "@playwright/mcp@0.0.80", "--headless", "--isolated", "--browser", "chrome", "--caps", "devtools", "--viewport-size", "1280x800", "--output-dir", "/tmp/shots"],
+    cwd: "/tmp/shots",
+    enabled: true,
+  });
+});
+
+test.skipIf(!live)("acp backend with a capture directory opens a page in the browser, saves the screenshot and the video there", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "acp-capture-"));
+  const captureDir = await mkdtemp(join(tmpdir(), "acp-shots-"));
+  await writeFile(join(cwd, "marker.txt"), "<h1>Shrike capture marker</h1>");
+  const port = 20_000 + Math.floor(Math.random() * 20_000);
+  const app = Bun.spawn(["bun", "run", SERVER, String(port)], { cwd, stdout: "ignore", stderr: "ignore" });
+  const logs: string[] = [];
+  const session = await acpBackend.open({ cwd, captureDir, log: (line) => logs.push(line) });
+  try {
+    for (let tries = 0; tries < 30 && !(await fetch(`http://127.0.0.1:${port}/`).then(() => true, () => false)); tries++) await new Promise((resolve) => setTimeout(resolve, 500));
+    const reply = await session.prompt(
+      `Use the playwright browser tools: call browser_start_video with filename "after.webm" and size { "width": 1280, "height": 800 }, browser_navigate to http://127.0.0.1:${port}/, browser_take_screenshot with filename "after-home.png" and no other options, then browser_stop_video. Reply with one \`\`\`json block: {"taken": ["home"]}. Nothing else.`,
+    );
+    expect(reply.text).toContain('"taken"');
+    await access(join(captureDir, "after-home.png"));
+    await access(join(captureDir, "after.webm"));
+    expect(logs.some((line) => line.includes("playwright"))).toBe(true);
+  } finally {
+    await session.close();
+    app.kill();
+  }
+}, 300_000);
 
 test.skipIf(!live)("acp backend reads files, cannot edit, and does not leak tokens", async () => {
   const cwd = await mkdtemp(join(tmpdir(), "acp-live-"));

@@ -9,16 +9,36 @@ const DEFAULT_TIMEOUT_MS = 20 * 60 * 1000;
 const SECRET_ENV = ["GITHUB_TOKEN", "INPUT_GITHUB_TOKEN", "GITHUB_APP_PRIVATE_KEY", "GITHUB_WEBHOOK_SECRET"];
 const REVIEW_PERMISSIONS = { read: "allow", glob: "allow", grep: "allow", list: "allow", lsp: "allow", todowrite: "allow", edit: "deny", bash: "deny", task: "deny", webfetch: "deny", websearch: "deny", external_directory: "deny", question: "deny", skill: "deny" };
 const FIX_PERMISSIONS = { ...REVIEW_PERMISSIONS, edit: "allow", bash: "allow" };
+const PLAYWRIGHT_MCP = "@playwright/mcp@0.0.80";
+
+export const opencodeConfig = (model: string, write: boolean, captureDir?: string): Record<string, unknown> => ({
+  share: "disabled",
+  autoupdate: false,
+  model,
+  permission: { ...(write ? FIX_PERMISSIONS : REVIEW_PERMISSIONS), ...(captureDir ? { "playwright_*": "allow" } : {}) },
+  ...(captureDir
+    ? {
+        mcp: {
+          playwright: {
+            type: "local",
+            command: ["bunx", PLAYWRIGHT_MCP, "--headless", "--isolated", "--browser", "chrome", "--caps", "devtools", "--viewport-size", "1280x800", "--output-dir", captureDir],
+            cwd: captureDir,
+            enabled: true,
+          },
+        },
+      }
+    : {}),
+});
 
 export const acpBackend: Backend = {
   name: "acp",
   defaultModel: "opencode/big-pickle",
-  async open({ cwd, model = acpBackend.defaultModel, timeoutMs = DEFAULT_TIMEOUT_MS, write = false, log }: SessionOptions) {
+  async open({ cwd, model = acpBackend.defaultModel, timeoutMs = DEFAULT_TIMEOUT_MS, write = false, captureDir, log }: SessionOptions) {
     const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !SECRET_ENV.includes(key)));
     const child = spawn(process.env.OPENCODE_BIN ?? "opencode", ["acp", "--cwd", cwd], {
       cwd,
       stdio: ["pipe", "pipe", "pipe"],
-      env: { ...env, OPENCODE_CONFIG_CONTENT: JSON.stringify({ share: "disabled", autoupdate: false, permission: write ? FIX_PERMISSIONS : REVIEW_PERMISSIONS, model }) },
+      env: { ...env, OPENCODE_CONFIG_CONTENT: JSON.stringify(opencodeConfig(model, write, captureDir)) },
     });
     child.stderr?.on("data", (chunk: Buffer) => log(`opencode: ${chunk.toString().trim()}`));
     const stream = acp.ndJsonStream(

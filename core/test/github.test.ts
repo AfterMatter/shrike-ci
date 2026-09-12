@@ -50,7 +50,7 @@ function fakeOctokit(calls: Call[], overrides: Record<string, (args: Record<stri
     paginate: async (fn: unknown, args: Record<string, unknown>) => (fn as (a: Record<string, unknown>) => Promise<unknown[]>)(args),
     rest: {
       pulls: {
-        get: record("get", { data: { title: "T", body: null, user: { login: "u" }, base: { ref: "main", repo: { clone_url: "https://github.com/o/r.git", full_name: "o/r" } }, head: { ref: "f", sha: "abc", repo: { full_name: "o/r" } } } }),
+        get: record("get", { data: { title: "T", body: null, user: { login: "u" }, base: { ref: "main", sha: "base0", repo: { clone_url: "https://github.com/o/r.git", full_name: "o/r", private: true } }, head: { ref: "f", sha: "abc", repo: { full_name: "o/r" } } } }),
         listFiles: record("listFiles", [{ filename: "a.ts", status: "modified", additions: 1, deletions: 0, patch: "@@ -1,2 +1,3 @@\n a\n+b\n c" }]),
         createReview: record("createReview", { data: { id: 1, html_url: "https://gh/review/1" } }),
         listCommits: record("listCommits", []),
@@ -69,6 +69,15 @@ function fakeOctokit(calls: Call[], overrides: Record<string, (args: Record<stri
       },
       repos: { getCombinedStatusForRef: record("getCombinedStatusForRef", { data: { statuses: [{ context: "ci/circle", state: "pending", target_url: "https://circle/1" }, { context: "cov", state: "failure", target_url: null }] } }) },
       actions: { downloadJobLogsForWorkflowRun: record("downloadJobLogsForWorkflowRun", { data: "2026-09-13T10:00:00.000Z line one\n2026-09-13T10:00:01.000Z line two\n" }) },
+      git: {
+        getRef: record("git.getRef", { data: { object: { sha: "oldhead" } } }),
+        getCommit: record("git.getCommit", { data: { sha: "oldhead", tree: { sha: "oldtree" } } }),
+        createBlob: record("git.createBlob", { data: { sha: "blob1" } }),
+        createTree: record("git.createTree", { data: { sha: "newtree" } }),
+        createCommit: record("git.createCommit", { data: { sha: "newcommit" } }),
+        updateRef: record("git.updateRef", {}),
+        createRef: record("git.createRef", {}),
+      },
       issues: {
         listComments: record("listComments", []),
         createComment: record("createComment", { data: { id: 9, html_url: "https://gh/comment/9" } }),
@@ -85,7 +94,7 @@ describe("PullRequestClient", () => {
   test("load builds diff and commentable lines from listFiles", async () => {
     const calls: Call[] = [];
     const pr = await new PullRequestClient(fakeOctokit(calls)).load(job);
-    expect(pr).toMatchObject({ owner: "o", repo: "r", number: 2, title: "T", author: "u", base: "main", head: "f", headSha: "abc", cloneUrl: "https://github.com/o/r.git", fork: false });
+    expect(pr).toMatchObject({ owner: "o", repo: "r", number: 2, title: "T", author: "u", base: "main", head: "f", headSha: "abc", baseSha: "base0", cloneUrl: "https://github.com/o/r.git", fork: false, private: true });
     const forked = fakeOctokit([], { get: () => ({ data: { title: "T", body: null, user: { login: "u" }, base: { ref: "main", repo: { clone_url: "c", full_name: "o/r" } }, head: { ref: "f", sha: "abc", repo: { full_name: "x/r" } } } }) });
     expect((await new PullRequestClient(forked).load(job)).fork).toBe(true);
     const gone = fakeOctokit([], { get: () => ({ data: { title: "T", body: null, user: { login: "u" }, base: { ref: "main", repo: { clone_url: "c", full_name: "o/r" } }, head: { ref: "f", sha: "abc", repo: null } } }) });
@@ -260,10 +269,64 @@ describe("checks and job logs", () => {
 
   test("reads a job log with the given token and gives an empty string when GitHub answers nothing", async () => {
     const calls: Call[] = [];
-    const client = new PullRequestClient(fakeOctokit(calls));
+    const minted: Call[] = [];
+    const tokens: string[] = [];
+    const client = new PullRequestClient(fakeOctokit(calls), (token) => (tokens.push(token), fakeOctokit(minted)));
     const pr = await client.load(job);
     expect(await client.jobLog(pr, 22)).toBe("2026-09-13T10:00:00.000Z line one\n2026-09-13T10:00:01.000Z line two\n");
     expect(calls.find((c) => c.method === "downloadJobLogsForWorkflowRun")!.args).toEqual({ owner: "o", repo: "r", job_id: 22 });
+    expect(await client.jobLog(pr, 22, "app-token")).toContain("line one");
+    expect(tokens).toEqual(["app-token"]);
+    expect(minted.map((c) => c.method)).toEqual(["downloadJobLogsForWorkflowRun"]);
     expect(await new PullRequestClient(fakeOctokit([], { downloadJobLogsForWorkflowRun: () => ({ data: { zipped: true } }) })).jobLog(pr, 22)).toBe("");
+  });
+
+  test("publish adds the files on top of the branch with the app token, or starts the branch from an empty tree", async () => {
+    const identity = { token: "app-token", name: "shrike[bot]", email: "1+shrike[bot]@users.noreply.github.com" };
+    const files = [
+      { path: "pr-2/abc/before-home.png", content: Buffer.from("png1") },
+      { path: "pr-2/abc/after-home.png", content: Buffer.from("png2") },
+    ];
+    const own: Call[] = [];
+    const minted: Call[] = [];
+    const tokens: string[] = [];
+    const client = new PullRequestClient(fakeOctokit(own), (token) => (tokens.push(token), fakeOctokit(minted)));
+    const pr = await client.load(job);
+    expect(await client.publish(pr, "shrike-media", files, "Shrike capture of #2 at abc", identity)).toBe("newcommit");
+    expect(tokens).toEqual(["app-token"]);
+    expect(own.map((c) => c.method)).toEqual(["get", "listFiles"]);
+    expect(minted.map((c) => c.method)).toEqual(["git.getRef", "git.getCommit", "git.createBlob", "git.createBlob", "git.createTree", "git.createCommit", "git.updateRef"]);
+    expect(minted.find((c) => c.method === "git.getRef")!.args).toEqual({ owner: "o", repo: "r", ref: "heads/shrike-media" });
+    expect(minted.filter((c) => c.method === "git.createBlob").map((c) => c.args)).toEqual([
+      { owner: "o", repo: "r", content: Buffer.from("png1").toString("base64"), encoding: "base64" },
+      { owner: "o", repo: "r", content: Buffer.from("png2").toString("base64"), encoding: "base64" },
+    ]);
+    expect(minted.find((c) => c.method === "git.createTree")!.args).toEqual({
+      owner: "o",
+      repo: "r",
+      base_tree: "oldtree",
+      tree: [
+        { path: "pr-2/abc/before-home.png", mode: "100644", type: "blob", sha: "blob1" },
+        { path: "pr-2/abc/after-home.png", mode: "100644", type: "blob", sha: "blob1" },
+      ],
+    });
+    const author = { name: identity.name, email: identity.email };
+    expect(minted.find((c) => c.method === "git.createCommit")!.args).toEqual({ owner: "o", repo: "r", message: "Shrike capture of #2 at abc", tree: "newtree", parents: ["oldhead"], author, committer: author });
+    expect(minted.find((c) => c.method === "git.updateRef")!.args).toEqual({ owner: "o", repo: "r", ref: "heads/shrike-media", sha: "newcommit" });
+
+    const fresh: Call[] = [];
+    const missing = () => {
+      throw Object.assign(new Error("Not Found"), { status: 404 });
+    };
+    await new PullRequestClient(fakeOctokit([]), () => fakeOctokit(fresh, { "git.getRef": missing })).publish(pr, "shrike-media", files.slice(0, 1), "m", identity);
+    expect(fresh.map((c) => c.method)).toEqual(["git.getRef", "git.createBlob", "git.createTree", "git.createCommit", "git.createRef"]);
+    expect(fresh.find((c) => c.method === "git.createTree")!.args).not.toHaveProperty("base_tree");
+    expect(fresh.find((c) => c.method === "git.createCommit")!.args).toMatchObject({ parents: [] });
+    expect(fresh.find((c) => c.method === "git.createRef")!.args).toEqual({ owner: "o", repo: "r", ref: "refs/heads/shrike-media", sha: "newcommit" });
+
+    const denied = () => {
+      throw Object.assign(new Error("Forbidden"), { status: 403 });
+    };
+    await expect(new PullRequestClient(fakeOctokit([]), () => fakeOctokit([], { "git.getRef": denied })).publish(pr, "shrike-media", files, "m", identity)).rejects.toThrow("Forbidden");
   });
 });

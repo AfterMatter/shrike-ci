@@ -3,8 +3,9 @@ import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentSession, Backend } from "../src/backends";
+import { CAPTURE_MARKER, mediaUrl } from "../src/capture";
 import { git } from "../src/checkout";
-import { STATUS_MARKER, type CheckRun, type PullRequest, type PullRequestClient, type PullRequestHistory } from "../src/github";
+import { STATUS_MARKER, type CheckRun, type MediaFile, type PullRequest, type PullRequestClient, type PullRequestHistory } from "../src/github";
 import type { Report } from "../src/report";
 import { renderStatus, runJob, type ReviewRun } from "../src/runner";
 import { resolveSettings, type Review } from "../src/settings";
@@ -29,7 +30,7 @@ async function repoAtHead(): Promise<{ dir: string; sha: string }> {
   return { dir, sha: await git(dir, ["rev-parse", "HEAD"]) };
 }
 
-const prAt = (dir: string, headSha: string, number = 1): PullRequest => ({
+const prAt = (dir: string, headSha: string, number = 1, baseSha = headSha): PullRequest => ({
   owner: "o",
   repo: "r",
   number,
@@ -39,14 +40,16 @@ const prAt = (dir: string, headSha: string, number = 1): PullRequest => ({
   base: "main",
   head: "f",
   headSha,
+  baseSha,
   cloneUrl: dir,
   fork: false,
+  private: false,
   files: [],
   diff: "+added line",
 });
 
 interface Trace {
-  sessions: { model: string; prompts: string[]; closed: boolean; write: boolean }[];
+  sessions: { model: string; prompts: string[]; closed: boolean; write: boolean; captureDir?: string }[];
   reviews: string[];
   checks: { review: string; conclusion?: string; title?: string }[];
   statuses: string[];
@@ -54,21 +57,24 @@ interface Trace {
   histories: number;
   polls: number;
   logs: number[];
+  published: { branch: string; files: MediaFile[]; message: string; token: string }[];
 }
 
 interface Fixtures {
   checks?: CheckRun[][];
   onFix?: (cwd: string) => Promise<void>;
+  onShots?: (side: "before" | "after", captureDir: string, url: string) => Promise<void>;
 }
 
 function fakes(replies: Record<string, string[]>, pr: PullRequest, fixtures: Fixtures = {}) {
-  const trace: Trace = { sessions: [], reviews: [], checks: [], statuses: [], comments: [], histories: 0, polls: 0, logs: [] };
-  const nameOf = (text: string) => (text.includes("You are Shriken") ? "shriken" : text.includes("You are Shrike, fixing") ? "autofix" : /running the "([a-z-]+)" review/.exec(text)?.[1]);
+  const trace: Trace = { sessions: [], reviews: [], checks: [], statuses: [], comments: [], histories: 0, polls: 0, logs: [], published: [] };
+  const nameOf = (text: string) =>
+    text.includes("You are Shriken") ? "shriken" : text.includes("You are Shrike, fixing") ? "autofix" : text.includes("You are Shrike, preparing before and after") ? "capture" : /running the "([a-z-]+)" review/.exec(text)?.[1];
   const backend: Backend = {
     name: "fake",
     defaultModel: "fake/default",
-    async open({ model, cwd, write }): Promise<AgentSession> {
-      const session = { model: model ?? "", prompts: [] as string[], closed: false, write: write === true };
+    async open({ model, cwd, write, captureDir }): Promise<AgentSession> {
+      const session = { model: model ?? "", prompts: [] as string[], closed: false, write: write === true, ...(captureDir ? { captureDir } : {}) };
       trace.sessions.push(session);
       const answered: Record<string, number> = {};
       return {
@@ -79,6 +85,8 @@ function fakes(replies: Record<string, string[]>, pr: PullRequest, fixtures: Fix
           answered[review] = (answered[review] ?? 0) + 1;
           if (reply === undefined) throw new Error(`no reply for ${review}`);
           if (review === "autofix") await fixtures.onFix?.(cwd);
+          const shots = /^The application at (\S+) now runs (the base branch|the pull request head)/.exec(text);
+          if (shots) await fixtures.onShots?.(shots[2] === "the base branch" ? "before" : "after", captureDir!, shots[1]!);
           return { text: reply, usage: { tokens: 10, cost: 0 } };
         },
         async close() {
@@ -115,6 +123,10 @@ function fakes(replies: Record<string, string[]>, pr: PullRequest, fixtures: Fix
       if (marker !== STATUS_MARKER) trace.comments.push(`${marker}\n${body}`);
       else trace.statuses.push(body);
       return { id: 2, url: `https://c/${marker}`, update: async (next: string) => void trace.statuses.push(next) };
+    },
+    async publish(_pr: PullRequest, branch: string, files: MediaFile[], message: string, identity: { token: string }) {
+      trace.published.push({ branch, files, message, token: identity.token });
+      return "feedfacefeedface";
     },
   } as unknown as PullRequestClient;
   return { trace, backend, gh };
@@ -661,4 +673,179 @@ describe("autofix", () => {
     expect(deniedRuns.at(-1)).toMatchObject({ review: "autofix", status: "error", error: "Shrike API /v1/autofix-token answered 503" });
     expect(denied.trace.sessions).toHaveLength(1);
   });
+});
+
+describe("capture", () => {
+  const SERVER = join(import.meta.dir, "fixtures", "serve.ts");
+  const identity = { token: "app-token", name: "shrike[bot]", email: "7+shrike[bot]@users.noreply.github.com" };
+  const plan = (shots: unknown[]) => `Plan:\n\`\`\`json\n${JSON.stringify({ shots })}\n\`\`\``;
+  const taken = (names: string[]) => `\`\`\`json\n${JSON.stringify({ taken: names })}\n\`\`\``;
+  const home = [{ name: "home", path: "/", steps: "wait for the marker" }];
+  const port = () => 20_000 + Math.floor(Math.random() * 20_000);
+
+  async function twoCommits(): Promise<{ dir: string; base: string; head: string }> {
+    const dir = await mkdtemp(join(tmpdir(), "runner-capture-"));
+    await git(dir, ["init", "-q"]);
+    const commit = async (marker: string) => {
+      await writeFile(join(dir, "marker.txt"), marker);
+      await git(dir, ["add", "-A"]);
+      await git(dir, ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", marker]);
+      return git(dir, ["rev-parse", "HEAD"]);
+    };
+    const base = await commit("base");
+    return { dir, base, head: await commit("head") };
+  }
+
+  const agent = (saves: ("before" | "after")[] = ["before", "after"]) => async (side: "before" | "after", captureDir: string, url: string) => {
+    if (!saves.includes(side)) return;
+    const body = await fetch(url).then((r) => r.text());
+    await writeFile(join(captureDir, `${side}-home.png`), body);
+    await writeFile(join(captureDir, `${side}.webm`), `video ${side}`);
+  };
+
+  const capturing = (at: number) => ({ capture: true, captureCommand: `bun run "${SERVER}" ${at}`, captureUrl: `http://127.0.0.1:${at}/`, reviews: ["code-review"] });
+
+  test("plans the shots, serves the base then the head, takes both sides, publishes the files and posts the pairs before shriken reads them", async () => {
+    const { dir, base, head } = await twoCommits();
+    const pr = prAt(dir, head, 1, base);
+    const at = port();
+    const { trace, backend, gh } = fakes({ "code-review": [report("pass")], capture: [plan(home), taken(["home"]), taken(["home"])], shriken }, pr, { onShots: agent() });
+    const logs: string[] = [];
+    const runs = await runJob(
+      { owner: "o", repo: "r", pr: 1, trigger: "pull_request", reviews: [] },
+      { gh, backend, settings: settings(capturing(at)), reviews, cwd: dir, log: (line) => logs.push(line), capture: { identity: async () => identity, startTimeoutMs: 30_000 } },
+    );
+    expect(runs.map((r) => [r.review, r.status, r.report?.verdict])).toEqual([
+      ["code-review", "done", "pass"],
+      ["capture", "done", "pass"],
+      ["shriken", "done", "pass"],
+    ]);
+    const session = trace.sessions[1]!;
+    expect(session.captureDir).toBeDefined();
+    expect(trace.sessions.map((s) => s.captureDir === undefined)).toEqual([true, false, true]);
+    expect(session.closed).toBe(true);
+    expect(session.prompts).toHaveLength(3);
+    expect(session.prompts[0]).toStartWith("You are Shrike, preparing before and after screenshots of pull request #1 of o/r (f -> main): T");
+    expect(session.prompts[0]).toContain(`The application will be served at http://127.0.0.1:${at}/.`);
+    expect(session.prompts[1]).toStartWith(`The application at http://127.0.0.1:${at}/ now runs the base branch, without this pull request.`);
+    expect(session.prompts[1]).toContain(`1. home: http://127.0.0.1:${at}//\n   Steps: wait for the marker`);
+    expect(session.prompts[1]).toContain('browser_start_video with filename "before.webm"');
+    expect(session.prompts[2]).toStartWith(`The application at http://127.0.0.1:${at}/ now runs the pull request head, with the change. Take the same shots again`);
+    expect(session.prompts[2]).toContain('browser_take_screenshot with filename "after-<name>.png"');
+    expect(trace.published).toHaveLength(1);
+    const { branch, files, message, token } = trace.published[0]!;
+    expect([branch, message, token]).toEqual(["shrike-media", `Shrike capture of #1 at ${head.slice(0, 7)}`, "app-token"]);
+    expect(files.map((f) => [f.path, f.content.toString()])).toEqual([
+      [`pr-1/${head.slice(0, 7)}/before-home.png`, "base"],
+      [`pr-1/${head.slice(0, 7)}/before.webm`, "video before"],
+      [`pr-1/${head.slice(0, 7)}/after-home.png`, "head"],
+      [`pr-1/${head.slice(0, 7)}/after.webm`, "video after"],
+    ]);
+    const url = (file: string) => mediaUrl(pr, "feedfacefeedface", file);
+    expect(runs[1]!.report).toEqual({
+      summary: "1 page captured before and after",
+      verdict: "pass",
+      findings: [],
+      capture: { shots: [{ name: "home", path: "/", before: url("before-home.png"), after: url("after-home.png") }], videos: { before: url("before.webm"), after: url("after.webm") } },
+    });
+    expect(runs[1]!.posted).toEqual({ id: 2, url: `https://c/${CAPTURE_MARKER}` });
+    expect(trace.comments).toHaveLength(1);
+    expect(trace.comments[0]).toStartWith(`${CAPTURE_MARKER}\n## Shrike · before and after`);
+    expect(trace.comments[0]).toContain(`<img src="${url("before-home.png")}" alt="before home" width="360">`);
+    expect(trace.comments[0]).toContain(`Video: [before](${url("before.webm")}), [after](${url("after.webm")})`);
+    expect(trace.checks.map((c) => [c.review, c.conclusion, c.title])).toEqual([
+      ["code-review", "success", "pass: 0 finding(s)"],
+      ["capture", "success", "1 page captured before and after"],
+      ["shriken", "neutral", "summary written"],
+    ]);
+    expect(trace.statuses.at(-1)).toContain("| capture | done | 1 page captured before and after | [review](https://c/<!-- shrike:capture -->) |");
+    const shrikenPrompt = trace.sessions[2]!.prompts[0]!;
+    expect(shrikenPrompt).toContain(`# Screenshots Shrike took before and after the change\n- alt: before home, url: ${url("before-home.png")}\n- alt: after home, url: ${url("after-home.png")}\n`);
+    expect(shrikenPrompt).not.toContain("## Review: capture");
+    expect(shrikenPrompt).toContain("with one integer for each of code-review.");
+    expect(runs[2]!.report?.scores).toEqual({ "code-review": 70 });
+    expect(await git(dir, ["worktree", "list"])).not.toContain("shrike-base-");
+    expect(await readFile(join(dir, "marker.txt"), "utf8")).toBe("head");
+    expect(logs).toContain("[capture] 1 shot(s) planned: home");
+    expect(logs).toContain(`[capture] published 4 file(s) to shrike-media as feedfac`);
+    expect(logs.filter((line) => line.startsWith("[capture] app: listening on"))).toHaveLength(2);
+    expect(await fetch(`http://127.0.0.1:${at}/`).then(() => true, () => false)).toBe(false);
+  }, 60_000);
+
+  test("an empty plan ends the step without serving, publishing or commenting, and a partial capture is a warning with only the taken side listed", async () => {
+    const { dir, base, head } = await twoCommits();
+    const pr = prAt(dir, head, 1, base);
+    const nothing = fakes({ "code-review": [report("pass")], capture: [plan([])], shriken }, pr);
+    const runs = await runJob(
+      { owner: "o", repo: "r", pr: 1, trigger: "pull_request", reviews: [] },
+      { gh: nothing.gh, backend: nothing.backend, settings: settings({ ...capturing(1), captureCommand: "exit 9" }), reviews, cwd: dir, log: () => {}, capture: { identity: async () => identity } },
+    );
+    expect(runs.map((r) => [r.review, r.status])).toEqual([
+      ["code-review", "done"],
+      ["capture", "done"],
+      ["shriken", "done"],
+    ]);
+    expect(runs[1]!.report).toEqual({ summary: "Nothing a browser shows changes in this pull request.", verdict: "pass", findings: [], capture: { shots: [], videos: {} } });
+    expect(nothing.trace.sessions[1]!.prompts).toHaveLength(1);
+    expect(nothing.trace.published).toEqual([]);
+    expect(nothing.trace.comments).toEqual([]);
+    expect(nothing.trace.sessions[2]!.prompts[0]).toContain("# Screenshots Shrike took before and after the change\n(none)");
+
+    const at = port();
+    const partial = fakes({ "code-review": [report("pass")], capture: [plan(home), "not json", taken([]), taken(["home"])], shriken }, pr, { onShots: agent(["after"]) });
+    const again = await runJob(
+      { owner: "o", repo: "r", pr: 1, trigger: "pull_request", reviews: [] },
+      { gh: partial.gh, backend: partial.backend, settings: settings({ ...capturing(at), session: "shared" }), reviews, cwd: dir, log: () => {}, capture: { identity: async () => identity, startTimeoutMs: 30_000 } },
+    );
+    expect(again.map((r) => [r.review, r.status, r.report?.verdict])).toEqual([
+      ["code-review", "done", "pass"],
+      ["capture", "done", "warn"],
+      ["shriken", "done", "pass"],
+    ]);
+    expect(partial.trace.sessions).toHaveLength(2);
+    expect(partial.trace.sessions[1]!.captureDir).toBeDefined();
+    expect(partial.trace.sessions[1]!.prompts).toHaveLength(4);
+    expect(partial.trace.sessions[1]!.prompts[2]).toMatch(/did not say which shots you took/);
+    expect(again[1]!.report?.summary).toBe("0 pages captured before and after, 1 incomplete");
+    expect(again[1]!.report?.capture).toEqual({ shots: [{ name: "home", path: "/", after: mediaUrl(pr, "feedfacefeedface", "after-home.png") }], videos: { after: mediaUrl(pr, "feedfacefeedface", "after.webm") } });
+    expect(partial.trace.published[0]!.files.map((f) => f.path)).toEqual([`pr-1/${head.slice(0, 7)}/after-home.png`, `pr-1/${head.slice(0, 7)}/after.webm`]);
+    expect(partial.trace.comments[0]).toContain("| **home** `/` | not taken | <a href=");
+    expect(partial.trace.checks[1]).toEqual({ review: "capture", conclusion: "neutral", title: "0 pages captured before and after, 1 incomplete" });
+    expect(partial.trace.sessions[0]!.prompts.at(-1)).toContain(`# Screenshots Shrike took before and after the change\n- alt: after home, url: ${mediaUrl(pr, "feedfacefeedface", "after-home.png")}\n`);
+  }, 60_000);
+
+  test("an app that does not start fails only the capture, capture is refused as a review name, and without an identity the step is skipped", async () => {
+    const { dir, base, head } = await twoCommits();
+    const pr = prAt(dir, head, 1, base);
+    const broken = fakes({ "code-review": [report("pass")], capture: [plan(home)], shriken }, pr);
+    const logs: string[] = [];
+    const runs = await runJob(
+      { owner: "o", repo: "r", pr: 1, trigger: "pull_request", reviews: [] },
+      { gh: broken.gh, backend: broken.backend, settings: settings({ ...capturing(1), captureCommand: "exit 2" }), reviews, cwd: dir, log: (line) => logs.push(line), capture: { identity: async () => identity } },
+    );
+    expect(runs.map((r) => [r.review, r.status])).toEqual([
+      ["code-review", "done"],
+      ["capture", "error"],
+      ["shriken", "done"],
+    ]);
+    expect(runs[1]!.error).toMatch(/the app command exited with 2 before http:\/\/127\.0\.0\.1:1\/ answered/);
+    expect(broken.trace.checks[1]).toEqual({ review: "capture", conclusion: "failure", title: "Shrike could not complete this capture" });
+    expect(broken.trace.published).toEqual([]);
+    expect(await git(dir, ["worktree", "list"])).not.toContain("shrike-base-");
+
+    const refused = fakes({ "code-review": [report("pass")], shriken }, pr);
+    const named = await runJob({ owner: "o", repo: "r", pr: 1, trigger: "comment", reviews: ["capture", "code-review"] }, { gh: refused.gh, backend: refused.backend, settings: settings(), reviews, cwd: dir, log: () => {} });
+    expect(named.map((r) => [r.review, r.status, r.error])).toEqual([
+      ["capture", "error", "capture runs after the reviews, not as one"],
+      ["code-review", "done", undefined],
+      ["shriken", "done", undefined],
+    ]);
+    expect(refused.trace.statuses[0]).toContain("| capture | error | capture runs after the reviews, not as one |");
+
+    const skipped = fakes({ "code-review": [report("pass")], shriken }, pr);
+    const lines: string[] = [];
+    const without = await runJob({ owner: "o", repo: "r", pr: 1, trigger: "pull_request", reviews: [] }, { gh: skipped.gh, backend: skipped.backend, settings: settings(capturing(1)), reviews, cwd: dir, log: (line) => lines.push(line) });
+    expect(without.map((r) => r.review)).toEqual(["code-review", "shriken"]);
+    expect(lines).toContain("[capture] skipped: this runner has no identity to publish the files with");
+  }, 60_000);
 });

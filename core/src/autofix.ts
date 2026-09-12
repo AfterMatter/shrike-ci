@@ -1,16 +1,10 @@
 // The autofix step: decides the mode, waits for the other checks, feeds
 // failures and findings to a writing agent, commits and pushes the fix.
 import { git } from "./checkout";
-import type { CheckRun, PullRequest, PullRequestClient } from "./github";
+import type { CheckRun, PullRequest, PullRequestClient, PushIdentity } from "./github";
 import type { Job } from "./job";
 import type { ReviewRun } from "./runner";
 import type { AutofixMode, Settings } from "./settings";
-
-export interface PushIdentity {
-  token: string;
-  name: string;
-  email: string;
-}
 
 export interface AutofixDeps {
   identity: () => Promise<PushIdentity>;

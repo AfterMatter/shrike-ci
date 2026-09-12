@@ -9,7 +9,7 @@ import type { ReviewRun } from "../src/runner";
 import { resolveSettings } from "../src/settings";
 
 const job = { owner: "o", repo: "r", pr: 1, trigger: "comment" as const, reviews: [] };
-const pr: PullRequest = { owner: "o", repo: "r", number: 1, title: "T", body: null, author: "a", base: "main", head: "feature", headSha: "abc", cloneUrl: "c", fork: false, files: [], diff: "" };
+const pr: PullRequest = { owner: "o", repo: "r", number: 1, title: "T", body: null, author: "a", base: "main", head: "feature", headSha: "abc", baseSha: "base", cloneUrl: "c", fork: false, private: false, files: [], diff: "" };
 const check = (name: string, status: CheckRun["status"], conclusion: string | null, jobId: number | null = null): CheckRun => ({ name, status, conclusion, url: null, jobId });
 const run = (review: string, verdict: "pass" | "warn" | "fail", findings = 0): ReviewRun => ({
   review,
