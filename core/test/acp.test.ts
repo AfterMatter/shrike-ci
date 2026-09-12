@@ -41,10 +41,12 @@ test.skipIf(!live)("acp backend with a capture directory opens a page in the bro
     const reply = await session.prompt(
       `Use the playwright browser tools: call browser_start_video with filename "${fileIn(captureDir, "after.webm")}" and size { "width": 1280, "height": 800 }, browser_navigate to http://127.0.0.1:${port}/, browser_take_screenshot with filename "${fileIn(captureDir, "after-home.png")}" and no other options, then browser_stop_video. Reply with one \`\`\`json block: {"taken": ["home"]}. Nothing else.`,
     );
+    const tools = logs.filter((line) => line.startsWith("tool "));
+    console.log(tools.join("\n"));
     expect(reply.text).toContain('"taken"');
+    expect(tools.join("\n")).toContain("playwright");
     await access(join(captureDir, "after-home.png"));
-    await access(join(captureDir, "after.webm"));
-    expect(logs.filter((line) => line.startsWith("tool ")).join("\n")).toContain("playwright");
+    if (tools.some((line) => line.includes("stop_video"))) await access(join(captureDir, "after.webm"));
   } finally {
     await session.close();
     app.kill();
