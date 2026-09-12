@@ -1,6 +1,6 @@
 # Shrike CI
 
-Shrike is to PRs as Linear is to Issues. This repository is the open source runner: the review engine and the GitHub Action that runs it inside your own CI. Which reviews run, their instructions, the model and the session mode are configured on the Shrike website and fetched at run time, so the workflow file carries no settings.
+Shrike is to PRs as Linear is to Issues. This repository is the open source runner: the review engine and the GitHub Action that runs it inside your own CI. Which reviews run, their instructions, the model, the session mode and whether Shriken writes the summary are configured on the Shrike website and fetched at run time, so the workflow file carries no settings.
 
 ## Add Shrike to a repository
 
@@ -47,7 +47,8 @@ jobs:
 2. A sticky `Shrike` comment lists every review and its status, updated after each one.
 3. Each review gets the repository checked out at the PR head, the full diff and its instructions, in a fresh agent session or in the shared session when that mode is on.
 4. Each review posts one pull request review with inline comments on changed lines, findings outside the diff in the review body, and one check run named `shrike/<review>`.
-5. Every finished review is reported back to the API so the website shows history and cost. One JSON report per review is also written to the `reports` output directory.
+5. When at least one review produced a report and the `shriken` setting is on (the default), Shriken runs once more with the reviews' findings, the commits, the discussion, the linked issues and pull requests and the images of the description. It writes one long markdown document for the human reviewer, posted as a sticky `Shriken` comment with a `shrike/shriken` check run. `shriken` is a reserved name and cannot be requested as a review.
+6. Every finished review, and the Shriken run, is reported back to the API so the website shows history and cost. One JSON report per run is also written to the `reports` output directory.
 
 ### Triggers
 

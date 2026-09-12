@@ -1,5 +1,5 @@
-// Structured report every skill run must produce as JSON.
-// Extracts and validates the fenced block from agent output.
+// Structured report every review must produce as JSON, and the
+// markdown document Shriken writes. Both extracted from agent output.
 import { z } from "zod";
 
 export const findingSchema = z.object({
@@ -33,4 +33,12 @@ export function parseReport(text: string): Report {
     }
   }
   throw new Error(`report is not valid JSON: ${lastError}`);
+}
+
+export function parseShriken(text: string): string {
+  const open = text.lastIndexOf("```markdown");
+  const close = text.lastIndexOf("```");
+  const document = (open >= 0 && close > open ? text.slice(open + "```markdown".length, close) : text).trim();
+  if (!document) throw new Error("no markdown document found");
+  return document;
 }

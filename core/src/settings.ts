@@ -10,6 +10,7 @@ export const settingsSchema = z.strictObject({
   backend: z.string().min(1).default("acp"),
   model: z.string().min(1).optional(),
   session: z.enum(["fresh", "shared"]).default("fresh"),
+  shriken: z.boolean().default(true),
 });
 
 export const reviewSchema = z.object({

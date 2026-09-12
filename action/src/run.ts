@@ -3,7 +3,7 @@
 import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { Octokit } from "octokit";
-import { actionsIdToken, getBackend, jobFromEvent, PullRequestClient, runJob, runRecord, SettingsApi } from "@shrike/core";
+import { actionsIdToken, getBackend, jobFromEvent, PullRequestClient, runJob, runRecord, SettingsApi, SHRIKEN } from "@shrike/core";
 
 const env = (name: string) => process.env[name]?.trim() || undefined;
 const token = env("INPUT_GITHUB_TOKEN") ?? env("GITHUB_TOKEN");
@@ -39,6 +39,6 @@ await mkdir(reportsDir, { recursive: true });
 await Promise.all(runs.map((run) => writeFile(join(reportsDir, `${run.review}.json`), JSON.stringify({ ...job, ...run }, null, 2))));
 if (env("GITHUB_OUTPUT")) await appendFile(env("GITHUB_OUTPUT")!, `reports=${reportsDir}\n`);
 
-const failed = runs.filter((run) => run.status === "error");
+const failed = runs.filter((run) => run.status === "error" && run.review !== SHRIKEN);
 console.log(`${runs.length - failed.length}/${runs.length} reviews completed, reports in ${reportsDir}`);
 if (failed.length) process.exit(1);

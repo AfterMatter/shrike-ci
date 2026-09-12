@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { parseReport } from "../src/report";
+import { parseReport, parseShriken } from "../src/report";
 
 const valid = { summary: "fine", verdict: "pass" as const, findings: [] };
 
@@ -30,5 +30,25 @@ describe("parseReport", () => {
   test("keeps optional range and suggestion", () => {
     const finding = { path: "a.ts", line: 5, startLine: 3, severity: "warning" as const, title: "t", body: "b", suggestion: "x" };
     expect(parseReport(`\`\`\`json\n${JSON.stringify({ ...valid, findings: [finding] })}\n\`\`\``).findings[0]).toEqual(finding);
+  });
+});
+
+describe("parseShriken", () => {
+  test("takes the content of the markdown fence", () => {
+    expect(parseShriken("Here:\n```markdown\n# Title\n\nBody.\n```\n")).toBe("# Title\n\nBody.");
+  });
+
+  test("keeps nested code fences up to the last closing fence", () => {
+    const document = "# Title\n\n```ts\nconst x = 1;\n```\n\n```diff\n- a\n+ b\n```\n\nEnd.";
+    expect(parseShriken(`\`\`\`markdown\n${document}\n\`\`\``)).toBe(document);
+    expect(parseShriken("draft:\n```markdown\nold\n```\nfinal:\n```markdown\nnew\n```")).toBe("new");
+  });
+
+  test("falls back to the whole text and rejects empty answers", () => {
+    expect(parseShriken("  # Plain\n\ntext  ")).toBe("# Plain\n\ntext");
+    expect(parseShriken("text ending with a fence\n```")).toBe("text ending with a fence\n```");
+    expect(() => parseShriken("")).toThrow(/no markdown document/);
+    expect(() => parseShriken("   \n")).toThrow(/no markdown document/);
+    expect(() => parseShriken("```markdown\n\n```")).toThrow(/no markdown document/);
   });
 });

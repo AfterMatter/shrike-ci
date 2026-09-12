@@ -12,12 +12,13 @@ function fakeFetch(calls: Call[], reply: (url: string) => Response) {
 
 describe("settings schema", () => {
   test("empty settings resolve to the default reviews and fresh sessions", () => {
-    expect(resolveSettings(undefined)).toEqual({ reviews: DEFAULT_REVIEWS, backend: "acp", session: "fresh" });
+    expect(resolveSettings(undefined)).toEqual({ reviews: DEFAULT_REVIEWS, backend: "acp", session: "fresh", shriken: true });
     expect(resolveSettings({ reviews: [] }).reviews).toEqual(DEFAULT_REVIEWS);
   });
 
   test("configured values win and unknown keys are rejected", () => {
-    expect(resolveSettings({ reviews: ["cleanup"], model: "x/y", session: "shared" })).toEqual({ reviews: ["cleanup"], backend: "acp", model: "x/y", session: "shared" });
+    expect(resolveSettings({ reviews: ["cleanup"], model: "x/y", session: "shared", shriken: false })).toEqual({ reviews: ["cleanup"], backend: "acp", model: "x/y", session: "shared", shriken: false });
+    expect(() => settingsSchema.parse({ shriken: "yes" })).toThrow();
     expect(() => settingsSchema.parse({ skills: ["cleanup"] })).toThrow();
     expect(() => settingsSchema.parse({ session: "hot" })).toThrow();
     expect(() => settingsSchema.parse({ reviews: ["Code Review"] })).toThrow();
@@ -48,7 +49,7 @@ describe("SettingsApi", () => {
     const result = await api.settings(["cleanup", "code-review"]);
     expect(calls[0]!.url).toBe("https://api.shrike.test/v1/settings?reviews=cleanup,code-review");
     expect((calls[0]!.init!.headers as Record<string, string>).authorization).toBe("Bearer oidc-jwt");
-    expect(result.settings).toEqual({ reviews: ["cleanup"], backend: "acp", session: "shared" });
+    expect(result.settings).toEqual({ reviews: ["cleanup"], backend: "acp", session: "shared", shriken: true });
     expect(result.reviews).toEqual([{ name: "cleanup", description: "d", body: "Rules." }]);
   });
 

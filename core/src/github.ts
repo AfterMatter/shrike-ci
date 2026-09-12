@@ -1,5 +1,5 @@
-// GitHub side of a run: load PR context, post reviews,
-// maintain the sticky status comment and per-skill check runs.
+// GitHub side of a run: load PR context and history, post reviews,
+// maintain sticky comments and per-review check runs.
 import type { Octokit } from "octokit";
 import { commentableLines, renderPatch } from "./diff";
 import type { Job } from "./job";
@@ -28,21 +28,80 @@ export interface PullRequest {
   diff: string;
 }
 
+export interface Commit {
+  sha: string;
+  headline: string;
+  author: string;
+  date: string;
+}
+
+export interface Comment {
+  author: string;
+  date: string;
+  body: string;
+  path?: string;
+  line?: number;
+}
+
+export interface LinkedIssue {
+  number: number;
+  title: string;
+  state: string;
+  body: string;
+  kind: "issue" | "pull";
+}
+
+export interface Image {
+  alt: string;
+  url: string;
+}
+
+export interface PullRequestHistory {
+  commits: Commit[];
+  comments: Comment[];
+  issues: LinkedIssue[];
+  images: Image[];
+}
+
 export type Conclusion = "success" | "neutral" | "failure";
 
 export interface CheckHandle {
   finish(conclusion: Conclusion, title: string, summary: string): Promise<void>;
 }
 
-export interface StatusComment {
+export interface StickyComment {
+  id: number;
+  url: string;
   update(body: string): Promise<void>;
 }
 
 export const STATUS_MARKER = "<!-- shrike:status -->";
+export const SHRIKEN_MARKER = "<!-- shrike:shriken -->";
+const SHRIKE_MARKER = "<!-- shrike:";
 const VERDICT_LABEL = { pass: "pass", warn: "warnings", fail: "changes needed" } as const;
 const CONCLUSION: Record<Report["verdict"], Conclusion> = { pass: "success", warn: "neutral", fail: "failure" };
 
 export const conclusionOf = (report: Report): Conclusion => CONCLUSION[report.verdict];
+
+export const headline = (message: string): string => message.split("\n", 1)[0]!.trim();
+
+export function mentionedNumbers(text: string, own: number, cap = 10): number[] {
+  const numbers = new Set<number>();
+  for (const [, digits] of text.matchAll(/#(\d+)\b/g)) {
+    const number = Number(digits);
+    if (number > 0 && number !== own) numbers.add(number);
+  }
+  return [...numbers].slice(0, cap);
+}
+
+export function imagesOf(body: string, cap = 12): Image[] {
+  const images: Image[] = [];
+  for (const [tag, alt, url] of body.matchAll(/!\[([^\]]*)\]\(([^)\s]+)[^)]*\)|<img\b[^>]*>/gi)) {
+    const src = url ?? /\bsrc="([^"]*)"/i.exec(tag)?.[1];
+    if (src) images.push({ alt: alt ?? /\balt="([^"]*)"/i.exec(tag)?.[1] ?? "", url: src });
+  }
+  return images.slice(0, cap);
+}
 
 export function renderFinding(finding: Finding): string {
   const suggestion = finding.suggestion === undefined ? "" : `\n\n\`\`\`suggestion\n${finding.suggestion}\n\`\`\``;
@@ -125,11 +184,38 @@ export class PullRequestClient {
     };
   }
 
-  async statusComment(pr: PullRequest, body: string): Promise<StatusComment> {
+  async stickyComment(pr: PullRequest, marker: string, body: string): Promise<StickyComment> {
     const { owner, repo, number: issue_number } = pr;
-    const write = (comment_id: number, text: string) => this.octokit.rest.issues.updateComment({ owner, repo, comment_id, body: `${STATUS_MARKER}\n${text}` });
-    const existing = (await this.octokit.paginate(this.octokit.rest.issues.listComments, { owner, repo, issue_number, per_page: 100 })).find((c) => c.body?.startsWith(STATUS_MARKER));
-    const id = existing ? (await write(existing.id, body), existing.id) : (await this.octokit.rest.issues.createComment({ owner, repo, issue_number, body: `${STATUS_MARKER}\n${body}` })).data.id;
-    return { update: async (next) => void (await write(id, next)) };
+    const write = (comment_id: number, text: string) => this.octokit.rest.issues.updateComment({ owner, repo, comment_id, body: `${marker}\n${text}` });
+    const existing = (await this.octokit.paginate(this.octokit.rest.issues.listComments, { owner, repo, issue_number, per_page: 100 })).find((c) => c.body?.startsWith(marker));
+    const { id, html_url: url } = existing ? (await write(existing.id, body), existing) : (await this.octokit.rest.issues.createComment({ owner, repo, issue_number, body: `${marker}\n${body}` })).data;
+    return { id, url, update: async (next) => void (await write(id, next)) };
+  }
+
+  async history(pr: PullRequest): Promise<PullRequestHistory> {
+    const { owner, repo, number: pull_number } = pr;
+    const page = { owner, repo, pull_number, issue_number: pull_number, per_page: 100 };
+    const commits = (await this.octokit.paginate(this.octokit.rest.pulls.listCommits, page)).slice(0, 100)
+      .map((c) => ({ sha: c.sha, headline: headline(c.commit.message), author: c.author?.login ?? c.commit.author?.name ?? "unknown", date: c.commit.author?.date ?? "" }));
+    const [issueComments, reviewComments, reviews] = await Promise.all([
+      this.octokit.paginate(this.octokit.rest.issues.listComments, page),
+      this.octokit.paginate(this.octokit.rest.pulls.listReviewComments, page),
+      this.octokit.paginate(this.octokit.rest.pulls.listReviews, page),
+    ]);
+    const comments: Comment[] = [
+      ...issueComments.map((c) => ({ author: c.user?.login ?? "unknown", date: c.created_at, body: c.body ?? "" })),
+      ...reviewComments.map((c) => ({ author: c.user.login, date: c.created_at, body: c.body, path: c.path, line: c.line ?? c.original_line })),
+      ...reviews.map((r) => ({ author: r.user?.login ?? "unknown", date: r.submitted_at ?? "", body: r.body?.trim() || r.state })),
+    ].filter((c) => c.body && !c.body.includes(SHRIKE_MARKER) && !c.body.startsWith("## Shrike")).sort((a, b) => a.date.localeCompare(b.date)).slice(-60)
+      .map((c) => ({ ...c, body: c.body.slice(0, 2000) }));
+    const issues = await Promise.all(mentionedNumbers([pr.title, pr.body ?? "", ...commits.map((c) => c.headline)].join("\n"), pull_number).map(async (number) => {
+      try {
+        const { data } = await this.octokit.rest.issues.get({ owner, repo, issue_number: number });
+        return [{ number, title: data.title, state: data.state, body: (data.body ?? "").slice(0, 1500), kind: data.pull_request ? "pull" : "issue" } satisfies LinkedIssue];
+      } catch {
+        return [];
+      }
+    }));
+    return { commits, comments, issues: issues.flat(), images: imagesOf(pr.body ?? "") };
   }
 }

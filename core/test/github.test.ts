@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { Octokit } from "octokit";
-import { PullRequestClient, renderFinding, renderReviewBody, splitFindings, STATUS_MARKER, type PullRequestFile } from "../src/github";
+import { headline, imagesOf, mentionedNumbers, PullRequestClient, renderFinding, renderReviewBody, SHRIKEN_MARKER, splitFindings, STATUS_MARKER, type PullRequestFile } from "../src/github";
 import type { Finding } from "../src/report";
 
 const file = (path: string, lines: number[]): PullRequestFile => ({ path, status: "modified", additions: 1, deletions: 0, lines: new Set(lines) });
@@ -45,18 +45,24 @@ function fakeOctokit(calls: Call[], overrides: Record<string, (args: Record<stri
     calls.push({ method, args });
     return overrides[method] ? overrides[method](args) : result;
   };
-  const listFiles = record("listFiles", [{ filename: "a.ts", status: "modified", additions: 1, deletions: 0, patch: "@@ -1,2 +1,3 @@\n a\n+b\n c" }]);
-  const listComments = record("listComments", []);
   return {
     paginate: async (fn: unknown, args: Record<string, unknown>) => (fn as (a: Record<string, unknown>) => Promise<unknown[]>)(args),
     rest: {
       pulls: {
         get: record("get", { data: { title: "T", body: null, user: { login: "u" }, base: { ref: "main", repo: { clone_url: "https://github.com/o/r.git" } }, head: { ref: "f", sha: "abc" } } }),
-        listFiles,
+        listFiles: record("listFiles", [{ filename: "a.ts", status: "modified", additions: 1, deletions: 0, patch: "@@ -1,2 +1,3 @@\n a\n+b\n c" }]),
         createReview: record("createReview", { data: { id: 1, html_url: "https://gh/review/1" } }),
+        listCommits: record("listCommits", []),
+        listReviewComments: record("listReviewComments", []),
+        listReviews: record("listReviews", []),
       },
       checks: { create: record("checks.create", { data: { id: 5 } }), update: record("checks.update", {}) },
-      issues: { listComments, createComment: record("createComment", { data: { id: 9 } }), updateComment: record("updateComment", {}) },
+      issues: {
+        listComments: record("listComments", []),
+        createComment: record("createComment", { data: { id: 9, html_url: "https://gh/comment/9" } }),
+        updateComment: record("updateComment", {}),
+        get: record("issues.get", { data: { title: "Issue", state: "open", body: "body" } }),
+      },
     },
   } as unknown as Octokit;
 }
@@ -112,19 +118,101 @@ describe("PullRequestClient", () => {
     expect(calls.find((c) => c.method === "checks.update")!.args).toMatchObject({ check_run_id: 5, status: "completed", conclusion: "neutral", output: { title: "title", summary: "summary" } });
   });
 
-  test("status comment is created once and then updated in place", async () => {
+  test("sticky comment is created once per marker and then updated in place", async () => {
     const calls: Call[] = [];
     const client = new PullRequestClient(fakeOctokit(calls));
-    const status = await client.statusComment(await client.load(job), "first");
+    const status = await client.stickyComment(await client.load(job), STATUS_MARKER, "first");
+    expect(status).toMatchObject({ id: 9, url: "https://gh/comment/9" });
     await status.update("second");
     expect(calls.filter((c) => c.method === "createComment")).toHaveLength(1);
     expect(calls.find((c) => c.method === "createComment")!.args.body).toBe(`${STATUS_MARKER}\nfirst`);
     expect(calls.find((c) => c.method === "updateComment")!.args).toMatchObject({ comment_id: 9, body: `${STATUS_MARKER}\nsecond` });
 
     const reuse: Call[] = [];
-    const existing = fakeOctokit(reuse, { listComments: () => [{ id: 3, body: "unrelated" }, { id: 4, body: `${STATUS_MARKER}\nold` }] });
-    await new PullRequestClient(existing).statusComment(await client.load(job), "fresh");
+    const existing = fakeOctokit(reuse, { listComments: () => [{ id: 3, body: "unrelated", html_url: "u3" }, { id: 4, body: `${STATUS_MARKER}\nold`, html_url: "u4" }, { id: 5, body: `${SHRIKEN_MARKER}\nold`, html_url: "u5" }] });
+    const pr = await client.load(job);
+    expect(await new PullRequestClient(existing).stickyComment(pr, STATUS_MARKER, "fresh")).toMatchObject({ id: 4, url: "u4" });
     expect(reuse.filter((c) => c.method === "createComment")).toHaveLength(0);
     expect(reuse.find((c) => c.method === "updateComment")!.args).toMatchObject({ comment_id: 4, body: `${STATUS_MARKER}\nfresh` });
+    expect((await new PullRequestClient(existing).stickyComment(pr, SHRIKEN_MARKER, "doc")).id).toBe(5);
+    expect(reuse.at(-1)!.args).toMatchObject({ comment_id: 5, body: `${SHRIKEN_MARKER}\ndoc` });
+  });
+
+  test("history collects commits, discussion without shrike comments, linked issues and images", async () => {
+    const calls: Call[] = [];
+    const commit = (sha: string, message: string, login?: string) => ({ sha, author: login ? { login } : null, commit: { message, author: { name: "Name", date: "2026-01-09T00:00:00Z" } } });
+    const octokit = fakeOctokit(calls, {
+      get: () => ({ data: { title: "Fix #12 and close #2", body: "See #7 #0 #99 #7\n![before](https://user-images/1)\n<img alt=\"after\" src=\"https://user-images/2\">", user: { login: "u" }, base: { ref: "main", repo: { clone_url: "c" } }, head: { ref: "f", sha: "abc" } } }),
+      listCommits: () => [commit("aaaaaaa1", "First line\n\nMore #5", "alice"), commit("bbbbbbb2", "Second #5")],
+      listComments: () => [
+        { id: 1, user: { login: "bob" }, created_at: "2026-01-03T00:00:00Z", body: "looks good" },
+        { id: 2, user: { login: "bot" }, created_at: "2026-01-04T00:00:00Z", body: `${STATUS_MARKER}\ntable` },
+        { id: 3, user: { login: "bot" }, created_at: "2026-01-05T00:00:00Z", body: `${SHRIKEN_MARKER}\n## Shriken` },
+        { id: 4, user: { login: "carol" }, created_at: "2026-01-06T00:00:00Z", body: "x".repeat(3000) },
+      ],
+      listReviewComments: () => [{ user: { login: "dan" }, created_at: "2026-01-02T00:00:00Z", body: "rename this", path: "a.ts", line: 3, original_line: 2 }],
+      listReviews: () => [{ user: { login: "erin" }, submitted_at: "2026-01-01T00:00:00Z", body: "", state: "APPROVED" }],
+      "issues.get": ({ issue_number }: Record<string, unknown>) => {
+        if (issue_number === 99) throw Object.assign(new Error("Not Found"), { status: 404 });
+        return { data: { title: `T${issue_number}`, state: "closed", body: issue_number === 12 ? "y".repeat(2000) : "b", ...(issue_number === 7 ? { pull_request: {} } : {}) } };
+      },
+    });
+    const client = new PullRequestClient(octokit);
+    const history = await client.history(await client.load(job));
+    expect(history.commits).toEqual([
+      { sha: "aaaaaaa1", headline: "First line", author: "alice", date: "2026-01-09T00:00:00Z" },
+      { sha: "bbbbbbb2", headline: "Second #5", author: "Name", date: "2026-01-09T00:00:00Z" },
+    ]);
+    expect(calls.find((c) => c.method === "listCommits")!.args).toMatchObject({ owner: "o", repo: "r", pull_number: 2, per_page: 100 });
+    expect(history.comments.map((c) => [c.author, c.body.length, c.path, c.line])).toEqual([["erin", 8, undefined, undefined], ["dan", 11, "a.ts", 3], ["bob", 10, undefined, undefined], ["carol", 2000, undefined, undefined]]);
+    expect(history.comments[0]!.body).toBe("APPROVED");
+    expect(history.comments.some((c) => c.body.includes("<!-- shrike:"))).toBe(false);
+    expect(history.issues).toEqual([
+      { number: 12, title: "T12", state: "closed", body: "y".repeat(1500), kind: "issue" },
+      { number: 7, title: "T7", state: "closed", body: "b", kind: "pull" },
+      { number: 5, title: "T5", state: "closed", body: "b", kind: "issue" },
+    ]);
+    expect(calls.filter((c) => c.method === "issues.get").map((c) => c.args.issue_number)).toEqual([12, 7, 99, 5]);
+    expect(history.images).toEqual([{ alt: "before", url: "https://user-images/1" }, { alt: "after", url: "https://user-images/2" }]);
+  });
+
+  test("history keeps the 60 newest comments and the first 100 commits", async () => {
+    const octokit = fakeOctokit([], {
+      listCommits: () => Array.from({ length: 120 }, (_, i) => ({ sha: `s${i}`, author: null, commit: { message: `m${i}`, author: null } })),
+      listComments: () => Array.from({ length: 70 }, (_, i) => ({ id: i, user: { login: "u" }, created_at: `2026-01-01T00:00:${String(i).padStart(2, "0")}Z`, body: `c${i}` })),
+    });
+    const client = new PullRequestClient(octokit);
+    const history = await client.history(await client.load(job));
+    expect(history.commits).toHaveLength(100);
+    expect(history.commits[0]).toEqual({ sha: "s0", headline: "m0", author: "unknown", date: "" });
+    expect(history.comments).toHaveLength(60);
+    expect(history.comments[0]!.body).toBe("c10");
+    expect(history.comments.at(-1)!.body).toBe("c69");
+    expect(history.issues).toEqual([]);
+  });
+});
+
+describe("history helpers", () => {
+  test("headline is the trimmed first line", () => {
+    expect(headline("  Fix it  \n\nDetails")).toBe("Fix it");
+    expect(headline("")).toBe("");
+  });
+
+  test("mentionedNumbers is distinct, ordered, skips zero and the own number", () => {
+    expect(mentionedNumbers("Fixes #12, see #3 and `#12` again, not #0 or #4x, but #40", 3)).toEqual([12, 40]);
+    expect(mentionedNumbers("#1 #2 #3 #4 #5 #6 #7 #8 #9 #10 #11 #12", 100)).toHaveLength(10);
+    expect(mentionedNumbers("nothing here", 1)).toEqual([]);
+  });
+
+  test("imagesOf reads markdown and html images in order", () => {
+    const body = 'Intro ![Before](https://github.com/user-attachments/assets/abc "title") then <img src="https://x/y.png" alt="After" width="300"> and <img width="1" src="https://x/z"> and ![](https://x/empty) <img alt="no src">';
+    expect(imagesOf(body)).toEqual([
+      { alt: "Before", url: "https://github.com/user-attachments/assets/abc" },
+      { alt: "After", url: "https://x/y.png" },
+      { alt: "", url: "https://x/z" },
+      { alt: "", url: "https://x/empty" },
+    ]);
+    expect(imagesOf("[a link](https://x) and no image")).toEqual([]);
+    expect(imagesOf(Array.from({ length: 15 }, (_, i) => `![i${i}](https://x/${i})`).join(" "))).toHaveLength(12);
   });
 });
