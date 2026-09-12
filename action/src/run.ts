@@ -11,6 +11,9 @@ if (!token) throw new Error("github_token input or GITHUB_TOKEN is required");
 const apiUrl = env("INPUT_API_URL");
 if (!apiUrl) throw new Error("api_url input is required, set the SHRIKE_API_URL repository variable from the Shrike website");
 
+const WITHOUT_APP = /answered (503|409):/;
+const JOB_IDENTITY = { token, name: "github-actions[bot]", email: "41898282+github-actions[bot]@users.noreply.github.com" };
+
 const eventName = env("GITHUB_EVENT_NAME") ?? "";
 const job = jobFromEvent(eventName, JSON.parse(await readFile(env("GITHUB_EVENT_PATH") ?? "", "utf8")));
 if (!job) {
@@ -33,6 +36,7 @@ const runs = await runJob(job, {
   log: (line) => console.log(line),
   onRun: (run, pr) => api.report(runRecord(job, run, pr)),
   autofix: { identity: () => api.autofixToken(), ownRunId: env("GITHUB_RUN_ID") },
+  capture: { identity: () => api.autofixToken().catch((error: Error) => (WITHOUT_APP.test(error.message) ? JOB_IDENTITY : Promise.reject(error))) },
 });
 
 const reportsDir = join(env("RUNNER_TEMP") ?? cwd, "shrike-reports");
