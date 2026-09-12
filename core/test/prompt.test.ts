@@ -24,13 +24,31 @@ describe("buildShrikenPrompt", () => {
     expect(prompt).toContain("# Discussion (chronological)\n- bob on 2026-01-02T00:00:00Z at `a.ts:3`:\nplease rename\n- a on 2026-01-03T00:00:00Z:\ndone");
     expect(prompt).toContain("# Linked issues and pull requests\n- #2 (issue, open): Thing missing\nWe need it");
     expect(prompt).toContain("# Images in the description\n- alt: before, url: https://i/1");
-    expect(prompt).toContain("## Review: code-review\nVerdict: warn\nSummary: Mostly fine.\n### a.ts:2-3 [warning] Rename\nUse a clearer name.\n```suggestion\nconst total = 1;\n```\n### b.ts:9 [info] Nit\nTrailing space.");
+    expect(prompt).toContain("## Review: code-review\nVerdict: warn\nSummary: Mostly fine.\n1. a.ts:2-3 [warning] Rename\nUse a clearer name.\n```suggestion\nconst total = 1;\n```\n2. b.ts:9 [info] Nit\nTrailing space.");
     expect(prompt).not.toContain("slop-review");
     expect(prompt).toContain("# Diff\n```diff\n+added line\n```");
     expect(prompt).toContain("```markdown fenced block and nothing after it");
     expect(prompt).toContain("Do not output JSON.");
-    expect(prompt).toContain("only as #N, commits only by their 7 character sha");
     expect(prompt).not.toContain('"findings"');
+  });
+
+  test("asks for short referenced paragraphs instead of a document", () => {
+    const prompt = buildShrikenPrompt(pr, history, runs);
+    const contract = prompt.slice(prompt.indexOf("# Output contract"));
+    expect(contract).toContain("two or three short paragraphs of at most 90 words each");
+    expect(contract).toContain("No headings, no lists, no code fences, no tables, no images.");
+    expect(contract).toContain("- [finding:<review>#<n>] the n-th finding of that review as numbered above, for example [finding:code-review#2]");
+    expect(contract).toContain("- [review:<name>] a whole review, for example [review:security-review]");
+    expect(contract).toContain("- [commit:<sha7>] a commit by its first 7 characters");
+    expect(contract).toContain("- [issue:<number>] a linked issue or pull request");
+    expect(contract).toContain("- [file:<path>] or [file:<path>:<line>] a file, optionally at a line of the new version");
+    expect(contract).toContain("Every claim about the code, a finding, a commit, a discussion or an issue carries at least one token.");
+    expect(contract).toContain("Tokens only name things listed above; never invent one.");
+    expect(contract).toContain("The only other markup allowed is inline code in backticks and **bold**.");
+    expect(contract).not.toContain("Before and after");
+    expect(contract).not.toContain("![");
+    expect(contract).not.toContain("long form");
+    expect(prompt).not.toContain("### ");
   });
 
   test("renders empty sections as none and truncates the diff", () => {

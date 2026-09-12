@@ -1,6 +1,13 @@
-// Structured report every review must produce as JSON, and the
-// markdown document Shriken writes. Both extracted from agent output.
+// Structured report every review must produce as JSON, the summary
+// Shriken writes and the reference tokens it carries, all from agent output.
 import { z } from "zod";
+
+const REFERENCE = /\[(finding|review|commit|issue|file):([^[\]\s]+)\]/g;
+
+export interface ShrikenReference {
+  kind: "finding" | "review" | "commit" | "issue" | "file";
+  value: string;
+}
 
 export const findingSchema = z.object({
   path: z.string().min(1),
@@ -42,3 +49,5 @@ export function parseShriken(text: string): string {
   if (!document) throw new Error("no markdown document found");
   return document;
 }
+
+export const shrikenReferences = (text: string): ShrikenReference[] => [...text.matchAll(REFERENCE)].map(([, kind, value]) => ({ kind: kind as ShrikenReference["kind"], value: value! }));

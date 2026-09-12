@@ -1,10 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import type { Octokit } from "octokit";
-import { headline, imagesOf, mentionedNumbers, PullRequestClient, renderFinding, renderReviewBody, SHRIKEN_MARKER, splitFindings, STATUS_MARKER, type PullRequestFile } from "../src/github";
+import { headline, imagesOf, mentionedNumbers, PullRequestClient, renderFinding, renderReviewBody, splitFindings, STATUS_MARKER, type PullRequestFile } from "../src/github";
 import type { Finding } from "../src/report";
 
 const file = (path: string, lines: number[]): PullRequestFile => ({ path, status: "modified", additions: 1, deletions: 0, lines: new Set(lines) });
 const finding = (extra: Partial<Finding>): Finding => ({ path: "a.ts", line: 3, severity: "warning", title: "t", body: "b", ...extra });
+const OTHER_MARKER = "<!-- shrike:other -->";
 
 describe("splitFindings", () => {
   test("keeps only findings whose line is commentable", () => {
@@ -129,13 +130,13 @@ describe("PullRequestClient", () => {
     expect(calls.find((c) => c.method === "updateComment")!.args).toMatchObject({ comment_id: 9, body: `${STATUS_MARKER}\nsecond` });
 
     const reuse: Call[] = [];
-    const existing = fakeOctokit(reuse, { listComments: () => [{ id: 3, body: "unrelated", html_url: "u3" }, { id: 4, body: `${STATUS_MARKER}\nold`, html_url: "u4" }, { id: 5, body: `${SHRIKEN_MARKER}\nold`, html_url: "u5" }] });
+    const existing = fakeOctokit(reuse, { listComments: () => [{ id: 3, body: "unrelated", html_url: "u3" }, { id: 4, body: `${STATUS_MARKER}\nold`, html_url: "u4" }, { id: 5, body: `${OTHER_MARKER}\nold`, html_url: "u5" }] });
     const pr = await client.load(job);
     expect(await new PullRequestClient(existing).stickyComment(pr, STATUS_MARKER, "fresh")).toMatchObject({ id: 4, url: "u4" });
     expect(reuse.filter((c) => c.method === "createComment")).toHaveLength(0);
     expect(reuse.find((c) => c.method === "updateComment")!.args).toMatchObject({ comment_id: 4, body: `${STATUS_MARKER}\nfresh` });
-    expect((await new PullRequestClient(existing).stickyComment(pr, SHRIKEN_MARKER, "doc")).id).toBe(5);
-    expect(reuse.at(-1)!.args).toMatchObject({ comment_id: 5, body: `${SHRIKEN_MARKER}\ndoc` });
+    expect((await new PullRequestClient(existing).stickyComment(pr, OTHER_MARKER, "doc")).id).toBe(5);
+    expect(reuse.at(-1)!.args).toMatchObject({ comment_id: 5, body: `${OTHER_MARKER}\ndoc` });
   });
 
   test("history collects commits, discussion without shrike comments, linked issues and images", async () => {
@@ -147,7 +148,7 @@ describe("PullRequestClient", () => {
       listComments: () => [
         { id: 1, user: { login: "bob" }, created_at: "2026-01-03T00:00:00Z", body: "looks good" },
         { id: 2, user: { login: "bot" }, created_at: "2026-01-04T00:00:00Z", body: `${STATUS_MARKER}\ntable` },
-        { id: 3, user: { login: "bot" }, created_at: "2026-01-05T00:00:00Z", body: `${SHRIKEN_MARKER}\n## Shriken` },
+        { id: 3, user: { login: "bot" }, created_at: "2026-01-05T00:00:00Z", body: `${OTHER_MARKER}\n## Shriken` },
         { id: 4, user: { login: "carol" }, created_at: "2026-01-06T00:00:00Z", body: "x".repeat(3000) },
       ],
       listReviewComments: () => [{ user: { login: "dan" }, created_at: "2026-01-02T00:00:00Z", body: "rename this", path: "a.ts", line: 3, original_line: 2 }],

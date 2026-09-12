@@ -76,7 +76,6 @@ export interface StickyComment {
 }
 
 export const STATUS_MARKER = "<!-- shrike:status -->";
-export const SHRIKEN_MARKER = "<!-- shrike:shriken -->";
 const SHRIKE_MARKER = "<!-- shrike:";
 const VERDICT_LABEL = { pass: "pass", warn: "warnings", fail: "changes needed" } as const;
 const CONCLUSION: Record<Report["verdict"], Conclusion> = { pass: "success", warn: "neutral", fail: "failure" };

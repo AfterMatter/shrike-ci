@@ -1,11 +1,11 @@
 // Runs a job: the requested reviews in order, fresh or shared session,
-// then the Shriken summary. Posts results and status after each step.
+// then the Shriken summary. Posts reviews and status after each step.
 import type { AgentSession, Backend } from "./backends";
 import { ensureCheckout } from "./checkout";
-import { conclusionOf, SHRIKEN_MARKER, STATUS_MARKER, type CheckHandle, type PullRequest, type PullRequestClient } from "./github";
+import { conclusionOf, STATUS_MARKER, type CheckHandle, type PullRequest, type PullRequestClient } from "./github";
 import type { Job } from "./job";
 import { buildPrompt, buildShrikenPrompt, RETRY_PROMPT, SHRIKEN_RETRY_PROMPT } from "./prompt";
-import { parseReport, parseShriken, type Report } from "./report";
+import { parseReport, parseShriken, shrikenReferences, type Report } from "./report";
 import type { Review, Settings } from "./settings";
 
 export interface ReviewRun {
@@ -139,10 +139,12 @@ export async function runJob(job: Job, deps: RunDeps): Promise<ReviewRun[]> {
       const run: ReviewRun = { review: SHRIKEN, backend: deps.backend.name, model, status: "queued" };
       runs.push(run);
       await step(run, async (session, _followUp, check) => {
-        const summary = await ask(run, session, buildShrikenPrompt(pr, await deps.gh.history(pr), runs), SHRIKEN_RETRY_PROMPT, parseShriken, deps.log);
+        const summary = await ask(run, session, buildShrikenPrompt(pr, await deps.gh.history(pr), runs), SHRIKEN_RETRY_PROMPT, (text) => {
+          const parsed = parseShriken(text);
+          if (!shrikenReferences(parsed).length) throw new Error("summary carries no references");
+          return parsed;
+        }, deps.log);
         run.report = { summary, verdict: verdicts.reduce((worst, verdict) => (RANK[verdict] > RANK[worst] ? verdict : worst), "pass"), findings: [] };
-        const { id, url } = await deps.gh.stickyComment(pr, SHRIKEN_MARKER, `## Shriken\n\n${summary}`);
-        run.posted = { id, url };
         await check.finish("neutral", "summary written", summary);
       });
     }

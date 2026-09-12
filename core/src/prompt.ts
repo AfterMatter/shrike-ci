@@ -1,5 +1,5 @@
 // Builds the prompts: a review session gets PR context, instructions and
-// the JSON contract; Shriken gets history, reports and the markdown contract.
+// the JSON contract; Shriken gets history, reports and the paragraph contract.
 import type { PullRequest, PullRequestHistory } from "./github";
 import type { ReviewRun } from "./runner";
 import type { Review } from "./settings";
@@ -10,11 +10,11 @@ export const RETRY_PROMPT =
   "Your last message did not contain a valid report. Reply with only one ```json fenced block matching the output contract, and nothing else.";
 
 export const SHRIKEN_RETRY_PROMPT =
-  "Your last message did not contain the document. Reply with the whole document inside one ```markdown fenced block and nothing after it. Do not output JSON.";
+  "Your last message did not contain a valid summary. Reply with the two or three paragraphs inside one ```markdown fenced block and nothing after it, and put a reference token such as [review:<name>] or [finding:<review>#<n>] on every claim. Do not output JSON.";
 
 const clipDiff = (diff: string): string => (diff.length > DIFF_LIMIT ? `${diff.slice(0, DIFF_LIMIT)}\n(diff truncated, read the remaining files with your tools)` : diff);
 
-const list = <T>(items: T[], render: (item: T) => string): string => (items.length ? items.map(render).join("\n") : "(none)");
+const list = <T>(items: T[], render: (item: T, index: number) => string): string => (items.length ? items.map(render).join("\n") : "(none)");
 
 export function buildPrompt(review: Review, pr: PullRequest, followUp = false): string {
   const context = followUp
@@ -68,7 +68,7 @@ ${clipDiff(pr.diff)}
 
 export function buildShrikenPrompt(pr: PullRequest, history: PullRequestHistory, runs: ReviewRun[]): string {
   const reviews = runs.flatMap((run) => (run.report ? [{ name: run.review, report: run.report }] : []));
-  return `You are Shriken, the summariser that runs after Shrike's reviews. You write the one document a pull request reviewer needs to read before deciding.
+  return `You are Shriken, the summariser that runs after Shrike's reviews. You write the short summary a pull request reviewer reads before deciding.
 
 Repository: ${pr.owner}/${pr.repo}
 Pull request #${pr.number}: ${pr.title}
@@ -79,7 +79,7 @@ Changed files: ${pr.files.length}
 Description:
 ${pr.body?.trim() || "(none)"}
 
-The repository is checked out at the pull request head in your working directory. Read any file you need with your tools to quote it. Do not modify files. Do not run commands that change state.
+The repository is checked out at the pull request head in your working directory. Read any file you need with your tools to check a claim. Do not modify files. Do not run commands that change state.
 
 # Commits
 ${list(history.commits, (c) => `- ${c.sha.slice(0, 7)} ${c.headline} (${c.author}, ${c.date})`)}
@@ -97,7 +97,7 @@ ${list(history.images, (i) => `- alt: ${i.alt || "(none)"}, url: ${i.url}`)}
 ${list(reviews, ({ name, report }) => `## Review: ${name}
 Verdict: ${report.verdict}
 Summary: ${report.summary}
-${list(report.findings, (f) => `### ${f.path}:${f.startLine === undefined ? f.line : `${f.startLine}-${f.line}`} [${f.severity}] ${f.title}
+${list(report.findings, (f, n) => `${n + 1}. ${f.path}:${f.startLine === undefined ? f.line : `${f.startLine}-${f.line}`} [${f.severity}] ${f.title}
 ${f.body}${f.suggestion === undefined ? "" : `\n\`\`\`suggestion\n${f.suggestion}\n\`\`\``}`)}`)}
 
 # Diff
@@ -106,17 +106,17 @@ ${clipDiff(pr.diff)}
 \`\`\`
 
 # Output contract
-Write one document in GitHub flavoured markdown, long form, in well written paragraphs, with these headings:
-- What the pull request does.
-- How it changes the code, with short fenced code blocks quoting the relevant lines from the checkout, tagged with the language.
-- What the reviews found, grouped by review, each finding explained with a \`\`\`diff block when it has a suggestion, using \`-\` lines for the current code and \`+\` lines for the suggested code.
-- History and discussion: commits by short sha, who said what, and the decisions taken.
-- Related issues and pull requests, mentioned as #N.
-- Before and after: repeat the images as ![alt](url) in a table with Before and After columns when the alts or the order make the pairing clear, otherwise as a list. Skip the heading when there are no images.
-- What the reviewer should decide: merge, request changes, or the questions to ask.
+Write two or three short paragraphs of at most 90 words each, in plain sentences, that tell the reviewer what the pull request does, what matters in what the reviews found, and what to decide: merge, request changes, or the questions to ask. No headings, no lists, no code fences, no tables, no images.
+Reference everything you mention with inline tokens so the website can link them:
+- [finding:<review>#<n>] the n-th finding of that review as numbered above, for example [finding:code-review#2]
+- [review:<name>] a whole review, for example [review:security-review]
+- [commit:<sha7>] a commit by its first 7 characters
+- [issue:<number>] a linked issue or pull request
+- [file:<path>] or [file:<path>:<line>] a file, optionally at a line of the new version
 Rules:
-- Mention pull requests and issues only as #N, commits only by their 7 character sha, files as inline code.
-- Never invent findings, commits or issues; use only what is given above or what the read tools show in the checkout.
+- Every claim about the code, a finding, a commit, a discussion or an issue carries at least one token.
+- Tokens only name things listed above; never invent one.
+- The only other markup allowed is inline code in backticks and **bold**.
 - Do not output JSON.
-- Answer with the document inside one \`\`\`markdown fenced block and nothing after it.`;
+- Answer with the text inside one \`\`\`markdown fenced block and nothing after it.`;
 }
