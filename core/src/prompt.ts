@@ -76,13 +76,13 @@ ${clipDiff(pr.diff)}
 \`\`\``}`;
 }
 
-export function buildCapturePlanPrompt(pr: PullRequest, url: string): string {
+export function buildCapturePlanPrompt(pr: PullRequest, url: string, command: string): string {
   return `You are Shrike, preparing before and after screenshots of pull request #${pr.number} of ${pr.owner}/${pr.repo} (${pr.head} -> ${pr.base}): ${pr.title}
 
 Description:
 ${pr.body?.trim() || "(none)"}
 
-The repository is checked out at the pull request head in your working directory. The application will be served at ${url}. Read the diff at the end and any file you need with your tools. Do not modify files. Do not open the browser yet.
+The repository is checked out at the pull request head in your working directory. The application will be started from the repository root with \`${command}\` and served at ${url}; work out from that command and the repository how a file or route maps to a path under the url. Read the diff at the end and any file you need with your tools. Do not modify files. Do not open the browser yet.
 
 Decide which pages a reviewer must see to judge this change visually. List at most 6 shots, each the route of a page whose rendering the diff changes and, when the change hides behind an interaction, the steps to reach it: open a dialog, pick a tab, hover a row. When the diff changes nothing a browser would show, such as tests, documentation, server code, build files or comments, answer with an empty list.
 

@@ -726,7 +726,7 @@ describe("capture", () => {
     expect(session.closed).toBe(true);
     expect(session.prompts).toHaveLength(3);
     expect(session.prompts[0]).toStartWith("You are Shrike, preparing before and after screenshots of pull request #1 of o/r (f -> main): T");
-    expect(session.prompts[0]).toContain(`The application will be served at http://127.0.0.1:${at}/.`);
+    expect(session.prompts[0]).toContain(`The application will be started from the repository root with \`bun run "${SERVER}" ${at}\` and served at http://127.0.0.1:${at}/;`);
     expect(session.prompts[1]).toStartWith(`The application at http://127.0.0.1:${at}/ now runs the base branch, without this pull request.`);
     expect(session.prompts[1]).toContain(`1. home: http://127.0.0.1:${at}//\n   Steps: wait for the marker`);
     expect(session.prompts[1]).toContain(`browser_start_video with filename "${session.captureDir!.replace(/\\/g, "/")}/before.webm"`);

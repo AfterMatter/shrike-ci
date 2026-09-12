@@ -177,7 +177,7 @@ export async function runJob(job: Job, deps: RunDeps): Promise<ReviewRun[]> {
       const outputDir = await mkdtemp(join(tmpdir(), "shrike-capture-"));
       try {
         const { session } = await opened({ captureDir: outputDir });
-        const shots = await ask(run, session, buildCapturePlanPrompt(pr, url), CAPTURE_PLAN_RETRY_PROMPT, parsePlan, deps.log);
+        const shots = await ask(run, session, buildCapturePlanPrompt(pr, url, command), CAPTURE_PLAN_RETRY_PROMPT, parsePlan, deps.log);
         if (!shots.length) return done("Nothing a browser shows changes in this pull request.", "pass");
         deps.log(`[capture] ${shots.length} shot(s) planned: ${shots.map((shot) => shot.name).join(", ")}`);
         const files: MediaFile[] = [];

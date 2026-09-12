@@ -75,16 +75,16 @@ describe("capture prompts", () => {
   ];
 
   test("the plan prompt gives the context, asks for routes of pages the diff changes, allows an empty list and carries the diff", () => {
-    const prompt = buildCapturePlanPrompt(pr, "http://localhost:5173");
+    const prompt = buildCapturePlanPrompt(pr, "http://localhost:5173", "python3 -m http.server 5173 --directory site");
     expect(prompt).toStartWith("You are Shrike, preparing before and after screenshots of pull request #4 of o/r (f -> main): Add thing\n\nDescription:\nCloses #2");
-    expect(prompt).toContain("The application will be served at http://localhost:5173.");
+    expect(prompt).toContain("The application will be started from the repository root with `python3 -m http.server 5173 --directory site` and served at http://localhost:5173; work out from that command and the repository how a file or route maps to a path under the url.");
     expect(prompt).toContain("Do not modify files. Do not open the browser yet.");
     expect(prompt).toContain("List at most 6 shots");
     expect(prompt).toContain("When the diff changes nothing a browser would show, such as tests, documentation, server code, build files or comments, answer with an empty list.");
     expect(prompt).toContain('{ "name": "settings-dialog", "path": "/settings", "steps": "click Appearance in the rail" }');
     expect(prompt).toContain('- "path" starts with / and is appended to http://localhost:5173; include the hash when the app routes by hash.');
     expect(prompt).toContain("# Diff\n```diff\n+added line\n```");
-    expect(buildCapturePlanPrompt({ ...pr, diff: "x".repeat(160_000) }, "http://localhost:5173")).toContain("(diff truncated");
+    expect(buildCapturePlanPrompt({ ...pr, diff: "x".repeat(160_000) }, "http://localhost:5173", "bun run dev")).toContain("(diff truncated");
     expect(CAPTURE_PLAN_RETRY_PROMPT).toContain('{"shots": []}');
   });
 
