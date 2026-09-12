@@ -31,6 +31,15 @@ describe("parseReport", () => {
     const finding = { path: "a.ts", line: 5, startLine: 3, severity: "warning" as const, title: "t", body: "b", suggestion: "x" };
     expect(parseReport(`\`\`\`json\n${JSON.stringify({ ...valid, findings: [finding] })}\n\`\`\``).findings[0]).toEqual(finding);
   });
+
+  test("reads a null range or suggestion as absent instead of failing the review", () => {
+    const nulled = { path: "a.ts", line: 5, startLine: null, severity: "warning" as const, title: "t", body: "b", suggestion: null };
+    const parsed = parseReport(`\`\`\`json\n${JSON.stringify({ ...valid, findings: [nulled] })}\n\`\`\``).findings[0]!;
+    expect(parsed).toEqual({ path: "a.ts", line: 5, severity: "warning", title: "t", body: "b" });
+    expect(parsed.suggestion).toBeUndefined();
+    expect(parsed.startLine).toBeUndefined();
+    expect(() => parseReport(`\`\`\`json\n${JSON.stringify({ ...valid, findings: [{ ...nulled, body: null }] })}\n\`\`\``)).toThrow();
+  });
 });
 
 describe("parseShriken", () => {
@@ -54,7 +63,7 @@ describe("parseShriken", () => {
 });
 
 describe("parseShrikenScores", () => {
-  const answer = "```markdown\nText [review:a].\n\n```diff\n-x\n+y\n```\n```\n```json\n{\"scores\": {\"a\": 90, \"b\": 55, \"c\": 1}}\n```";
+  const answer = '```markdown\nText [review:a].\n\n```diff\n-x\n+y\n```\n```\n```json\n{"scores": {"a": 90, "b": 55, "c": 1}}\n```';
 
   test("reads the json block after the document, keeps the asked reviews in order and leaves the document intact", () => {
     expect(parseShrikenScores(answer, ["b", "a"])).toEqual({ b: 55, a: 90 });
@@ -64,11 +73,11 @@ describe("parseShrikenScores", () => {
 
   test("refuses missing reviews, values outside 0 to 100, decimals and answers without the block", () => {
     expect(() => parseShrikenScores(answer, ["a", "d"])).toThrow("scores missing for d");
-    expect(() => parseShrikenScores("```json\n{\"scores\": {\"a\": 101}}\n```", ["a"])).toThrow();
-    expect(() => parseShrikenScores("```json\n{\"scores\": {\"a\": 9.5}}\n```", ["a"])).toThrow();
-    expect(() => parseShrikenScores("```json\n{\"scores\": {\"a\": -1}}\n```", ["a"])).toThrow();
+    expect(() => parseShrikenScores('```json\n{"scores": {"a": 101}}\n```', ["a"])).toThrow();
+    expect(() => parseShrikenScores('```json\n{"scores": {"a": 9.5}}\n```', ["a"])).toThrow();
+    expect(() => parseShrikenScores('```json\n{"scores": {"a": -1}}\n```', ["a"])).toThrow();
     expect(() => parseShrikenScores("```markdown\nText.\n```", ["a"])).toThrow(/no json block/);
-    expect(parseShrikenScores("```json\n{\"scores\": {}}\n```", [])).toEqual({});
+    expect(parseShrikenScores('```json\n{"scores": {}}\n```', [])).toEqual({});
   });
 });
 

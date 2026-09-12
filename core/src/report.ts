@@ -31,13 +31,24 @@ const scoresSchema = z.object({ scores: z.record(z.string(), z.number().int().mi
 export type Finding = z.infer<typeof findingSchema>;
 export type Report = z.infer<typeof reportSchema>;
 
+const withoutNulls = (value: unknown): unknown =>
+  Array.isArray(value)
+    ? value.map(withoutNulls)
+    : value !== null && typeof value === "object"
+      ? Object.fromEntries(
+          Object.entries(value)
+            .filter(([, own]) => own !== null)
+            .map(([key, own]) => [key, withoutNulls(own)]),
+        )
+      : value;
+
 export function parseReport(text: string): Report {
   const blocks = [...text.matchAll(/```(?:json)?\s*\n([\s\S]*?)\n\s*```/g)].map((m) => m[1]!);
   const candidates = blocks.length ? blocks.reverse() : [text.slice(text.indexOf("{"), text.lastIndexOf("}") + 1)];
   let lastError = "no JSON block found";
   for (const candidate of candidates) {
     try {
-      return reportSchema.parse(JSON.parse(candidate));
+      return reportSchema.parse(withoutNulls(JSON.parse(candidate)));
     } catch (error) {
       lastError = error instanceof Error ? error.message : String(error);
     }
