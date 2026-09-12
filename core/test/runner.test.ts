@@ -11,7 +11,8 @@ import { resolveSettings, type Review } from "../src/settings";
 
 const report = (verdict: Report["verdict"], findings: Report["findings"] = []): string => `\`\`\`json\n${JSON.stringify({ summary: `${verdict} summary`, verdict, findings })}\n\`\`\``;
 const SUMMARY = "It adds a line [commit:abcdef0] to [file:f.txt:1].\n\nNothing blocks the merge [review:code-review].";
-const shriken = [`Here it is:\n\`\`\`markdown\n${SUMMARY}\n\`\`\``];
+const SCORES = '```json\n{"scores": {"code-review": 70, "slop-review": 80, "security-review": 40, "cleanup": 90, "extra": 1}}\n```';
+const shriken = [`Here it is:\n\`\`\`markdown\n${SUMMARY}\n\`\`\`\n${SCORES}`];
 const reviews: Review[] = ["code-review", "slop-review", "security-review", "cleanup", "shriken"].map((name) => ({ name, description: `${name} description`, body: `Rules of ${name}.` }));
 const settings = (raw: Record<string, unknown> = {}) => resolveSettings(raw);
 const history: PullRequestHistory = { commits: [{ sha: "abcdef0123", headline: "Add line", author: "a", date: "2026-01-01T00:00:00Z" }], comments: [], issues: [], images: [] };
@@ -93,7 +94,13 @@ describe("runJob", () => {
     expect(trace.reviews).toEqual(["slop-review", "code-review", "security-review"]);
     expect(trace.checks.map((c) => [c.review, c.conclusion])).toEqual([["slop-review", "neutral"], ["code-review", "success"], ["security-review", "failure"], ["shriken", "neutral"]]);
     expect(runs.every((r) => r.usage?.tokens === 10 && r.startedAt && r.finishedAt)).toBe(true);
-    expect(runs.at(-1)!.report).toEqual({ summary: SUMMARY, verdict: "fail", findings: [] });
+    expect(runs.at(-1)!.report).toEqual({ summary: SUMMARY, verdict: "fail", findings: [], scores: { "slop-review": 80, "code-review": 70, "security-review": 40 } });
+    expect(trace.sessions[3]!.prompts[0]).toContain('{"scores": {"<review>": <0 to 100>}} with one integer for each of slop-review, code-review, security-review.');
+    expect(runs[0]!.transcript).toEqual([
+      { role: "prompt", text: trace.sessions[0]!.prompts[0]! },
+      { role: "reply", text: report("warn") },
+    ]);
+    expect(seen.length).toBe(4);
     expect(runs.at(-1)!.posted).toBeUndefined();
     expect(trace.comments).toEqual([]);
     expect(trace.statuses[0]).toContain("| slop-review | queued |");
@@ -149,11 +156,15 @@ describe("runJob", () => {
   test("shriken retries once for the markdown fence and a failure is recorded without touching the reviews", async () => {
     const { dir, sha } = await repoAtHead();
     const pr = prAt(dir, sha);
-    const retried = fakes({ "code-review": [report("warn")], shriken: ["", `\`\`\`markdown\n${SUMMARY}\n\`\`\``] }, pr);
+    const retried = fakes({ "code-review": [report("warn")], shriken: ["", `\`\`\`markdown\n${SUMMARY}\n\`\`\`\n${SCORES}`] }, pr);
     const runs = await runJob({ owner: "o", repo: "r", pr: 1, trigger: "comment", reviews: ["code-review"] }, { gh: retried.gh, backend: retried.backend, settings: settings(), reviews, cwd: dir, log: () => {} });
     expect(runs.map((r) => [r.review, r.status, r.report?.verdict])).toEqual([["code-review", "done", "warn"], ["shriken", "done", "warn"]]);
     expect(retried.trace.sessions[1]!.prompts).toHaveLength(2);
-    expect(retried.trace.sessions[1]!.prompts[1]).toMatch(/did not contain a valid summary.*```markdown.*reference token/);
+    expect(retried.trace.sessions[1]!.prompts[1]).toMatch(/did not contain a valid summary.*```markdown.*reference token.*```json/);
+    expect(runs[1]!.transcript!.map((turn) => turn.role)).toEqual(["prompt", "reply", "prompt", "reply"]);
+    const unscored = fakes({ "code-review": [report("warn")], shriken: [`\`\`\`markdown\n${SUMMARY}\n\`\`\``, `\`\`\`markdown\n${SUMMARY}\n\`\`\`\n\`\`\`json\n{"scores": {"slop-review": 3}}\n\`\`\``] }, pr);
+    const unscoredRuns = await runJob({ owner: "o", repo: "r", pr: 1, trigger: "comment", reviews: ["code-review"] }, { gh: unscored.gh, backend: unscored.backend, settings: settings(), reviews, cwd: dir, log: () => {} });
+    expect(unscoredRuns.at(-1)).toMatchObject({ review: "shriken", status: "error", error: "scores missing for code-review" });
     expect(retried.trace.sessions[1]!.closed).toBe(true);
 
     const failed = fakes({ "code-review": [report("pass")], shriken: ["", "   "] }, pr);
@@ -188,7 +199,7 @@ describe("runJob", () => {
     expect(seen).toEqual([["code-review", "done"], ["shriken", "error"]]);
     expect(logs).toContain("[shriken] summary carries no references, asking again");
 
-    const recovered = fakes({ "code-review": [report("pass")], shriken: [plain, `\`\`\`markdown\n${SUMMARY}\n\`\`\``] }, pr);
+    const recovered = fakes({ "code-review": [report("pass")], shriken: [plain, `\`\`\`markdown\n${SUMMARY}\n\`\`\`\n${SCORES}`] }, pr);
     const reported: [string, string | undefined][] = [];
     const recoveredRuns = await runJob({ owner: "o", repo: "r", pr: 1, trigger: "comment", reviews: ["code-review"] }, { gh: recovered.gh, backend: recovered.backend, settings: settings(), reviews, cwd: dir, log: () => {}, onRun: async (run) => void reported.push([run.review, run.report?.summary]) });
     expect(recoveredRuns.map((r) => [r.review, r.status])).toEqual([["code-review", "done"], ["shriken", "done"]]);

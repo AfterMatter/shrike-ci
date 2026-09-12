@@ -27,8 +27,7 @@ describe("buildShrikenPrompt", () => {
     expect(prompt).toContain("## Review: code-review\nVerdict: warn\nSummary: Mostly fine.\n1. a.ts:2-3 [warning] Rename\nUse a clearer name.\n```suggestion\nconst total = 1;\n```\n2. b.ts:9 [info] Nit\nTrailing space.");
     expect(prompt).not.toContain("slop-review");
     expect(prompt).toContain("# Diff\n```diff\n+added line\n```");
-    expect(prompt).toContain("```markdown fenced block and nothing after it");
-    expect(prompt).toContain("Do not output JSON.");
+    expect(prompt).toContain("```markdown fenced block, then the ```json block, and nothing after it");
     expect(prompt).not.toContain('"findings"');
   });
 
@@ -36,7 +35,10 @@ describe("buildShrikenPrompt", () => {
     const prompt = buildShrikenPrompt(pr, history, runs);
     const contract = prompt.slice(prompt.indexOf("# Output contract"));
     expect(contract).toContain("two or three paragraphs of plain sentences, at most 90 words each");
-    expect(contract).toContain("No headings, no lists, no tables, no links.");
+    expect(contract).toContain("No headings, no lists, no tables, no links, no placeholder tokens such as [start] or [end]: the text begins with its first sentence.");
+    expect(contract).toContain("The last paragraph takes a position in plain words, merge, request changes, or hold and ask, names the one thing that decides it, and says what would change your mind.");
+    expect(contract).toContain('{"scores": {"<review>": <0 to 100>}} with one integer for each of code-review.');
+    expect(contract).toContain("a fail verdict cannot score above 60");
     expect(contract).toContain("at most three blocks in total");
     expect(contract).toContain("- a \`\`\`diff block quoting at most 15 lines of the diff above that matter most, right after a sentence naming that file with a [file:<path>:<line>] token");
     expect(contract).toContain("- a \`\`\`suggestion block copied from a finding, right after a sentence with that finding's token");

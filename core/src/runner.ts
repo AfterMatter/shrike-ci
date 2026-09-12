@@ -6,8 +6,13 @@ import { ensureCheckout } from "./checkout";
 import { conclusionOf, headline, STATUS_MARKER, type CheckHandle, type PullRequest, type PullRequestClient } from "./github";
 import type { Job } from "./job";
 import { AUTOFIX_RETRY_PROMPT, buildAutofixPrompt, buildPrompt, buildShrikenPrompt, RETRY_PROMPT, SHRIKEN_RETRY_PROMPT } from "./prompt";
-import { parseReport, parseShriken, shrikenReferences, type Report } from "./report";
+import { parseReport, parseShriken, parseShrikenScores, shrikenReferences, type Report } from "./report";
 import type { AutofixMode, Review, Settings } from "./settings";
+
+export interface Turn {
+  role: "prompt" | "reply" | "tool";
+  text: string;
+}
 
 export interface ReviewRun {
   review: string;
@@ -20,6 +25,7 @@ export interface ReviewRun {
   report?: Report;
   posted?: { id: number; url: string };
   error?: string;
+  transcript?: Turn[];
 }
 
 export interface RunRecord {
@@ -32,6 +38,11 @@ export interface RunRecord {
   tokens: number;
   cost: number;
   report?: unknown;
+  backend: string;
+  model: string;
+  startedAt?: string;
+  finishedAt?: string;
+  transcript: Turn[];
 }
 
 export interface RunDeps {
@@ -49,6 +60,7 @@ export interface RunDeps {
 type Opened = { session: AgentSession; followUp: boolean };
 
 export const SHRIKEN = "shriken";
+const PROMPT_KEEP = 20_000;
 const RANK: Record<Report["verdict"], number> = { pass: 0, warn: 1, fail: 2 };
 
 export const runRecord = (job: Job, run: ReviewRun, pr: PullRequest): RunRecord => ({
@@ -61,7 +73,14 @@ export const runRecord = (job: Job, run: ReviewRun, pr: PullRequest): RunRecord 
   tokens: run.usage?.tokens ?? 0,
   cost: run.usage?.cost ?? 0,
   report: run.report,
+  backend: run.backend,
+  model: run.model,
+  startedAt: run.startedAt,
+  finishedAt: run.finishedAt,
+  transcript: run.transcript ?? [],
 });
+
+const said = (run: ReviewRun, role: Turn["role"], text: string) => (run.transcript ??= []).push({ role, text: role === "prompt" && text.length > PROMPT_KEEP ? `${text.slice(0, PROMPT_KEEP)}\n(prompt cut after ${PROMPT_KEEP} characters)` : text });
 
 export function renderStatus(runs: ReviewRun[]): string {
   const rows = runs.map((run) => {
@@ -72,13 +91,17 @@ export function renderStatus(runs: ReviewRun[]): string {
 }
 
 async function ask<T>(run: ReviewRun, session: AgentSession, prompt: string, retry: string, parse: (text: string) => T, log: (line: string) => void): Promise<T> {
+  said(run, "prompt", prompt);
   const first = await session.prompt(prompt);
+  said(run, "reply", first.text);
   run.usage = first.usage;
   try {
     return parse(first.text);
   } catch (error) {
     log(`[${run.review}] ${error instanceof Error ? error.message : String(error)}, asking again`);
+    said(run, "prompt", retry);
     const second = await session.prompt(retry);
+    said(run, "reply", second.text);
     run.usage = second.usage;
     return parse(second.text);
   }
@@ -95,12 +118,16 @@ export async function runJob(job: Job, deps: RunDeps): Promise<ReviewRun[]> {
   });
   const status = await deps.gh.stickyComment(pr, STATUS_MARKER, renderStatus(runs));
   let shared: AgentSession | undefined;
-  let current = "";
+  let current: ReviewRun | undefined;
+  const heard = (line: string) => {
+    if (line.startsWith("tool ") && current) said(current, "tool", line);
+    deps.log(`[${current?.review ?? "?"}] ${line}`);
+  };
   const open = async (run: ReviewRun, write: boolean): Promise<Opened> => {
-    current = run.review;
-    if (write || deps.settings.session !== "shared") return { session: await deps.backend.open({ cwd: deps.cwd, model, write, log: (line) => deps.log(`[${run.review}] ${line}`) }), followUp: false };
+    current = run;
+    if (write || deps.settings.session !== "shared") return { session: await deps.backend.open({ cwd: deps.cwd, model, write, log: heard }), followUp: false };
     const followUp = shared !== undefined;
-    shared ??= await deps.backend.open({ cwd: deps.cwd, model, log: (line) => deps.log(`[${current}] ${line}`) });
+    shared ??= await deps.backend.open({ cwd: deps.cwd, model, log: heard });
     return { session: shared, followUp };
   };
   const step = async (run: ReviewRun, work: (opened: (write?: boolean) => Promise<Opened>, check: CheckHandle) => Promise<void>) => {
@@ -172,12 +199,13 @@ export async function runJob(job: Job, deps: RunDeps): Promise<ReviewRun[]> {
       runs.push(run);
       await step(run, async (opened, check) => {
         const { session } = await opened();
-        const summary = await ask(run, session, buildShrikenPrompt(pr, await deps.gh.history(pr), runs), SHRIKEN_RETRY_PROMPT, (text) => {
+        const scored = runs.filter((own) => own.report).map((own) => own.review);
+        const { summary, scores } = await ask(run, session, buildShrikenPrompt(pr, await deps.gh.history(pr), runs), SHRIKEN_RETRY_PROMPT, (text) => {
           const parsed = parseShriken(text);
           if (!shrikenReferences(parsed).length) throw new Error("summary carries no references");
-          return parsed;
+          return { summary: parsed, scores: parseShrikenScores(text, scored) };
         }, deps.log);
-        run.report = { summary, verdict: verdicts.reduce((worst, verdict) => (RANK[verdict] > RANK[worst] ? verdict : worst), "pass"), findings: [] };
+        run.report = { summary, verdict: verdicts.reduce((worst, verdict) => (RANK[verdict] > RANK[worst] ? verdict : worst), "pass"), findings: [], scores };
         await check.finish("neutral", "summary written", summary);
       });
     }
