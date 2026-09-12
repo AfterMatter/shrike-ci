@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { access, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { access, mkdtemp, readdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { acpBackend, opencodeConfig } from "../src/backends/acp";
@@ -46,6 +46,8 @@ test.skipIf(!live)("acp backend with a capture directory opens a page in the bro
     expect(reply.text).toContain('"taken"');
     expect(tools.join("\n")).toContain("playwright");
     await access(join(captureDir, "after-home.png"));
+    for (let waited = 0; waited < 15_000 && !(await access(join(captureDir, "after.webm")).then(() => true, () => false)); waited += 500) await new Promise((resolve) => setTimeout(resolve, 500));
+    console.log(`capture dir: ${(await readdir(captureDir)).join(", ")}; checkout: ${(await readdir(cwd)).join(", ")}`);
     if (tools.some((line) => line.includes("stop_video"))) await access(join(captureDir, "after.webm"));
   } finally {
     await session.close();

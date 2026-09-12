@@ -42,6 +42,7 @@ export const SIDES: Side[] = ["before", "after"];
 export const START_MS = 3 * 60 * 1000;
 const POLL_MS = 1000;
 const STOP_MS = 5000;
+const VIDEO_MS = 15_000;
 export const ABOUT: Record<Side, string> = { before: "the base branch, without this pull request", after: "the pull request head, with the change" };
 
 export const parsePlan = (text: string): Shot[] => parseJson(text, planSchema, "plan").shots;
@@ -98,14 +99,16 @@ export async function baseWorktree(cwd: string, sha: string, token: string | und
   return { dir, remove: async () => void (await git(cwd, ["worktree", "remove", "--force", dir]).catch(() => "")) };
 }
 
-export async function collect(outputDir: string, side: Side, shots: Shot[]): Promise<MediaFile[]> {
-  const files = await Promise.all(
-    [...shots.map((shot) => shotFile(side, shot.name)), videoFile(side)].map(async (file) => {
-      const content = await readFile(join(outputDir, file)).catch(() => null);
-      return content ? [{ path: file, content }] : [];
-    }),
-  );
-  return files.flat();
+export async function collect(outputDir: string, side: Side, shots: Shot[], videoWaitMs = VIDEO_MS): Promise<MediaFile[]> {
+  const read = (file: string) => readFile(join(outputDir, file)).catch(() => null);
+  const files = await Promise.all(shots.map(async (shot) => ({ path: shotFile(side, shot.name), content: await read(shotFile(side, shot.name)) })));
+  const deadline = Date.now() + videoWaitMs;
+  let video = await read(videoFile(side));
+  while (!video && Date.now() < deadline) {
+    await sleep(POLL_MS);
+    video = await read(videoFile(side));
+  }
+  return [...files, { path: videoFile(side), content: video }].flatMap((file) => (file.content ? [{ path: file.path, content: file.content }] : []));
 }
 
 export function captureOf(pr: PullRequest, sha: string, shots: Shot[], files: MediaFile[]): Capture {

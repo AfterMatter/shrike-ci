@@ -49,10 +49,16 @@ describe("files and urls", () => {
     await writeFile(join(dir, "after-home.png"), "a1");
     await writeFile(join(dir, "after.webm"), "v");
     await writeFile(join(dir, "after-other.png"), "stray");
-    expect((await collect(dir, "before", shots)).map((f) => [f.path, f.content.toString()])).toEqual([["before-home.png", "b1"]]);
-    expect((await collect(dir, "after", shots)).map((f) => [f.path, f.content.toString()])).toEqual([
+    expect((await collect(dir, "before", shots, 0)).map((f) => [f.path, f.content.toString()])).toEqual([["before-home.png", "b1"]]);
+    expect((await collect(dir, "after", shots, 0)).map((f) => [f.path, f.content.toString()])).toEqual([
       ["after-home.png", "a1"],
       ["after.webm", "v"],
+    ]);
+    const late = collect(dir, "before", shots, 5000);
+    setTimeout(() => void writeFile(join(dir, "before.webm"), "late"), 1200);
+    expect((await late).map((f) => [f.path, f.content.toString()])).toEqual([
+      ["before-home.png", "b1"],
+      ["before.webm", "late"],
     ]);
   });
 
