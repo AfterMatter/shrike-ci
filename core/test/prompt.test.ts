@@ -3,7 +3,7 @@ import type { PullRequest, PullRequestHistory } from "../src/github";
 import { buildPrompt, buildShrikenPrompt } from "../src/prompt";
 import type { ReviewRun } from "../src/runner";
 
-const pr: PullRequest = { owner: "o", repo: "r", number: 4, title: "Add thing", body: "Closes #2\n![before](https://i/1)", author: "a", base: "main", head: "f", headSha: "abc", cloneUrl: "c", files: [], diff: "+added line" };
+const pr: PullRequest = { owner: "o", repo: "r", number: 4, title: "Add thing", body: "Closes #2\n![before](https://i/1)", author: "a", base: "main", head: "f", headSha: "abc", cloneUrl: "c", fork: false, files: [], diff: "+added line" };
 const history: PullRequestHistory = {
   commits: [{ sha: "0123456789abcdef", headline: "Add thing", author: "a", date: "2026-01-01T00:00:00Z" }],
   comments: [{ author: "bob", date: "2026-01-02T00:00:00Z", body: "please rename", path: "a.ts", line: 3 }, { author: "a", date: "2026-01-03T00:00:00Z", body: "done" }],

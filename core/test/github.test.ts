@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { Octokit } from "octokit";
-import { headline, imagesOf, mentionedNumbers, PullRequestClient, renderFinding, renderReviewBody, splitFindings, STATUS_MARKER, type PullRequestFile } from "../src/github";
+import { headline, imagesOf, isOwnRun, jobIdOf, mentionedNumbers, PullRequestClient, renderFinding, renderReviewBody, splitFindings, STATUS_MARKER, type PullRequestFile } from "../src/github";
 import type { Finding } from "../src/report";
 
 const file = (path: string, lines: number[]): PullRequestFile => ({ path, status: "modified", additions: 1, deletions: 0, lines: new Set(lines) });
@@ -50,14 +50,25 @@ function fakeOctokit(calls: Call[], overrides: Record<string, (args: Record<stri
     paginate: async (fn: unknown, args: Record<string, unknown>) => (fn as (a: Record<string, unknown>) => Promise<unknown[]>)(args),
     rest: {
       pulls: {
-        get: record("get", { data: { title: "T", body: null, user: { login: "u" }, base: { ref: "main", repo: { clone_url: "https://github.com/o/r.git" } }, head: { ref: "f", sha: "abc" } } }),
+        get: record("get", { data: { title: "T", body: null, user: { login: "u" }, base: { ref: "main", repo: { clone_url: "https://github.com/o/r.git", full_name: "o/r" } }, head: { ref: "f", sha: "abc", repo: { full_name: "o/r" } } } }),
         listFiles: record("listFiles", [{ filename: "a.ts", status: "modified", additions: 1, deletions: 0, patch: "@@ -1,2 +1,3 @@\n a\n+b\n c" }]),
         createReview: record("createReview", { data: { id: 1, html_url: "https://gh/review/1" } }),
         listCommits: record("listCommits", []),
         listReviewComments: record("listReviewComments", []),
         listReviews: record("listReviews", []),
       },
-      checks: { create: record("checks.create", { data: { id: 5 } }), update: record("checks.update", {}) },
+      checks: {
+        create: record("checks.create", { data: { id: 5 } }),
+        update: record("checks.update", {}),
+        listForRef: record("checks.listForRef", [
+          { name: "test", status: "completed", conclusion: "failure", details_url: "https://github.com/o/r/actions/runs/11/job/22" },
+          { name: "shrike/code-review", status: "completed", conclusion: "success", details_url: "https://github.com/o/r/actions/runs/99/job/98" },
+          { name: "review", status: "in_progress", conclusion: null, details_url: "https://github.com/o/r/actions/runs/99/job/97" },
+          { name: "deploy", status: "queued", conclusion: null, details_url: null },
+        ]),
+      },
+      repos: { getCombinedStatusForRef: record("getCombinedStatusForRef", { data: { statuses: [{ context: "ci/circle", state: "pending", target_url: "https://circle/1" }, { context: "cov", state: "failure", target_url: null }] } }) },
+      actions: { downloadJobLogsForWorkflowRun: record("downloadJobLogsForWorkflowRun", { data: "2026-09-13T10:00:00.000Z line one\n2026-09-13T10:00:01.000Z line two\n" }) },
       issues: {
         listComments: record("listComments", []),
         createComment: record("createComment", { data: { id: 9, html_url: "https://gh/comment/9" } }),
@@ -74,7 +85,11 @@ describe("PullRequestClient", () => {
   test("load builds diff and commentable lines from listFiles", async () => {
     const calls: Call[] = [];
     const pr = await new PullRequestClient(fakeOctokit(calls)).load(job);
-    expect(pr).toMatchObject({ owner: "o", repo: "r", number: 2, title: "T", author: "u", base: "main", head: "f", headSha: "abc", cloneUrl: "https://github.com/o/r.git" });
+    expect(pr).toMatchObject({ owner: "o", repo: "r", number: 2, title: "T", author: "u", base: "main", head: "f", headSha: "abc", cloneUrl: "https://github.com/o/r.git", fork: false });
+    const forked = fakeOctokit([], { get: () => ({ data: { title: "T", body: null, user: { login: "u" }, base: { ref: "main", repo: { clone_url: "c", full_name: "o/r" } }, head: { ref: "f", sha: "abc", repo: { full_name: "x/r" } } } }) });
+    expect((await new PullRequestClient(forked).load(job)).fork).toBe(true);
+    const gone = fakeOctokit([], { get: () => ({ data: { title: "T", body: null, user: { login: "u" }, base: { ref: "main", repo: { clone_url: "c", full_name: "o/r" } }, head: { ref: "f", sha: "abc", repo: null } } }) });
+    expect((await new PullRequestClient(gone).load(job)).fork).toBe(true);
     expect(pr.diff).toBe("diff --git a/a.ts b/a.ts\n--- a/a.ts\n+++ b/a.ts\n@@ -1,2 +1,3 @@\n a\n+b\n c\n");
     expect([...pr.files[0]!.lines]).toEqual([1, 2, 3]);
     expect(calls.map((c) => c.method)).toEqual(["get", "listFiles"]);
@@ -215,5 +230,40 @@ describe("history helpers", () => {
     ]);
     expect(imagesOf("[a link](https://x) and no image")).toEqual([]);
     expect(imagesOf(Array.from({ length: 15 }, (_, i) => `![i${i}](https://x/${i})`).join(" "))).toHaveLength(12);
+  });
+});
+
+describe("checks and job logs", () => {
+  test("lists the other check runs and statuses of the head, leaving out Shrike's own checks and its own workflow run", async () => {
+    const calls: Call[] = [];
+    const client = new PullRequestClient(fakeOctokit(calls));
+    const pr = await client.load(job);
+    expect(await client.checks(pr, "99")).toEqual([
+      { name: "test", status: "completed", conclusion: "failure", url: "https://github.com/o/r/actions/runs/11/job/22", jobId: 22 },
+      { name: "deploy", status: "queued", conclusion: null, url: null, jobId: null },
+      { name: "ci/circle", status: "in_progress", conclusion: "pending", url: "https://circle/1", jobId: null },
+      { name: "cov", status: "completed", conclusion: "failure", url: null, jobId: null },
+    ]);
+    expect(calls.find((c) => c.method === "checks.listForRef")!.args).toMatchObject({ owner: "o", repo: "r", ref: "abc" });
+    expect((await client.checks(pr)).map((check) => check.name)).toEqual(["test", "review", "deploy", "ci/circle", "cov"]);
+  });
+
+  test("job ids come from the details url and own runs are told apart by run id", () => {
+    expect(jobIdOf("https://github.com/o/r/actions/runs/11/job/22")).toBe(22);
+    expect(jobIdOf("https://github.com/o/r/actions/runs/11/jobs/22?pr=4")).toBe(22);
+    expect(jobIdOf("https://circle/1")).toBeNull();
+    expect(jobIdOf(null)).toBeNull();
+    expect(isOwnRun("https://github.com/o/r/actions/runs/11/job/22", "11")).toBe(true);
+    expect(isOwnRun("https://github.com/o/r/actions/runs/111/job/22", "11")).toBe(false);
+    expect(isOwnRun("https://github.com/o/r/actions/runs/11/job/22", undefined)).toBe(false);
+  });
+
+  test("reads a job log with the given token and gives an empty string when GitHub answers nothing", async () => {
+    const calls: Call[] = [];
+    const client = new PullRequestClient(fakeOctokit(calls));
+    const pr = await client.load(job);
+    expect(await client.jobLog(pr, 22)).toBe("2026-09-13T10:00:00.000Z line one\n2026-09-13T10:00:01.000Z line two\n");
+    expect(calls.find((c) => c.method === "downloadJobLogsForWorkflowRun")!.args).toEqual({ owner: "o", repo: "r", job_id: 22 });
+    expect(await new PullRequestClient(fakeOctokit([], { downloadJobLogsForWorkflowRun: () => ({ data: { zipped: true } }) })).jobLog(pr, 22)).toBe("");
   });
 });

@@ -1,8 +1,9 @@
-// Builds the prompts: a review session gets PR context, instructions and
-// the JSON contract; Shriken gets history, reports and the paragraph contract.
+// Builds the prompts: a review session gets PR context, instructions and the
+// JSON contract; Shriken gets history and reports; autofix gets failures and findings.
+import type { Problems } from "./autofix";
 import type { PullRequest, PullRequestHistory } from "./github";
 import type { ReviewRun } from "./runner";
-import type { Review } from "./settings";
+import type { AutofixMode, Review } from "./settings";
 
 const DIFF_LIMIT = 150_000;
 
@@ -11,6 +12,9 @@ export const RETRY_PROMPT =
 
 export const SHRIKEN_RETRY_PROMPT =
   "Your last message did not contain a valid summary. Reply with the two or three paragraphs inside one ```markdown fenced block and nothing after it, and put a reference token such as [review:<name>] or [finding:<review>#<n>] on every claim. Do not output JSON.";
+
+export const AUTOFIX_RETRY_PROMPT =
+  "Your last message did not contain the summary. Reply with one ```markdown fenced block: a first line of at most 70 characters saying what you changed, then one or two short paragraphs, and nothing after it.";
 
 const clipDiff = (diff: string): string => (diff.length > DIFF_LIMIT ? `${diff.slice(0, DIFF_LIMIT)}\n(diff truncated, read the remaining files with your tools)` : diff);
 
@@ -123,4 +127,24 @@ Rules:
 - The only other markup allowed is inline code in backticks and **bold**.
 - Do not output JSON.
 - Answer with the document inside one \`\`\`markdown fenced block and nothing after it.`;
+}
+
+export function buildAutofixPrompt(pr: PullRequest, mode: AutofixMode, problems: Problems): string {
+  return `You are Shrike, fixing pull request #${pr.number} of ${pr.owner}/${pr.repo} (${pr.head} -> ${pr.base}) so that ${mode === "ci" ? "the CI" : "the Shrike reviews and the CI"} turn green.
+
+The repository is checked out at the pull request head in your working directory. You may edit files and run commands. Make the smallest change that removes each cause below without changing what the pull request sets out to do. Never edit anything under .github/workflows, never skip, disable, delete or weaken a test or a check to make it pass, never commit or push: the runner commits your working tree. When the repository has a command that reproduces a failure, run it before and after your change.
+
+# Failing checks
+${list(problems.failures, (failure) => `## ${failure.name}${failure.url ? ` (${failure.url})` : ""}
+\`\`\`
+${failure.log || "(no log available, read the check on GitHub)"}
+\`\`\``)}
+
+# Review findings to resolve
+${list(problems.findings, (run) => `## Review: ${run.review} (${run.report!.verdict})
+${list(run.report!.findings, (f, n) => `${n + 1}. ${f.path}:${f.startLine === undefined ? f.line : `${f.startLine}-${f.line}`} [${f.severity}] ${f.title}
+${f.body}${f.suggestion === undefined ? "" : `\n\`\`\`suggestion\n${f.suggestion}\n\`\`\``}`)}`)}
+
+# Output contract
+When you are done, answer with one \`\`\`markdown fenced block and nothing after it: a first line of at most 70 characters saying what you changed (it becomes the commit title), then one or two short paragraphs explaining the cause and the fix. If something could not be fixed, say which and why. If you changed nothing, say so.`;
 }

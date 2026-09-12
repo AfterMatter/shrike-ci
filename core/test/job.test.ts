@@ -57,6 +57,21 @@ describe("jobFromEvent", () => {
     expect(jobFromEvent("issue_comment", { action: "created", repository, issue: { number: 4, pull_request: {} }, comment: { body: "@shrike" } })).toBeNull();
   });
 
+  test("autofix comments carry the mode and leave the reviews to the settings", () => {
+    const at = (body: string) => jobFromEvent("issue_comment", { action: "created", repository, issue: { number: 4, pull_request: {} }, comment: { body, author_association: "OWNER" } });
+    expect(at("@shrike autofix")).toEqual({ owner: "forloopcodes", repo: "shrike", repositoryId: 501, installationId: undefined, pr: 4, trigger: "comment", reviews: [], autofix: "all" });
+    expect(at("@shrike autofix ci")).toMatchObject({ reviews: [], autofix: "ci" });
+    expect(at("@shrike Autofix CI")).toMatchObject({ reviews: [], autofix: "ci" });
+    expect(at("@shrike autofix all")).toMatchObject({ reviews: ["all"], autofix: "all" });
+    expect(at("@shrike autofix ci slop-review")).toMatchObject({ reviews: ["slop-review"], autofix: "ci" });
+    expect(at("@shrike slop-review")).not.toHaveProperty("autofix");
+    expect(at("@shrike ci")).toMatchObject({ reviews: ["ci"] });
+    expect(at("@shrike ci")).not.toHaveProperty("autofix");
+    expect(jobFromEvent("issue_comment", { action: "created", repository, issue: { number: 4, pull_request: {} }, comment: { body: "@shrike autofix", author_association: "NONE" } })).toBeNull();
+    expect(jobFromEvent("repository_dispatch", { repository, client_payload: { pr: 3, trigger: "comment", reviews: [], autofix: "ci" } })).toMatchObject({ autofix: "ci" });
+    expect(() => jobFromEvent("repository_dispatch", { repository, client_payload: { pr: 3, trigger: "comment", reviews: [], autofix: "always" } })).toThrow();
+  });
+
   test("review comments use the pull request number", () => {
     expect(jobFromEvent("pull_request_review_comment", { action: "created", repository, pull_request: { number: 9 }, comment: { body: "@shrike", author_association: "OWNER" } })).toMatchObject({ pr: 9, reviews: [] });
   });

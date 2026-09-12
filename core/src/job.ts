@@ -1,5 +1,5 @@
-// Job model shared by webhook, action and runner.
-// Maps GitHub events and @shrike comments to ordered review lists.
+// Job model shared by webhook, action and runner. Maps GitHub events and
+// @shrike comments to ordered review lists and a one off autofix mode.
 import { z } from "zod";
 
 export const jobSchema = z.object({
@@ -9,6 +9,7 @@ export const jobSchema = z.object({
   pr: z.number().int().positive(),
   trigger: z.enum(["pull_request", "comment", "dispatch"]),
   reviews: z.array(z.string().regex(/^[a-z0-9-]+$/)).default([]),
+  autofix: z.enum(["ci", "all"]).optional(),
   installationId: z.number().int().optional(),
 });
 
@@ -42,8 +43,10 @@ export function jobFromEvent(name: string, payload: unknown): Job | null {
   }
   if ((name === "issue_comment" || name === "pull_request_review_comment") && event.action === "created") {
     const pr = name === "issue_comment" ? (event.issue?.pull_request ? event.issue.number : undefined) : event.pull_request?.number;
-    const reviews = parseTrigger(event.comment?.body);
-    return pr === undefined || reviews === null || !TRUSTED.has(event.comment?.author_association ?? "") ? null : { ...repo, pr, trigger: "comment", reviews };
+    const words = parseTrigger(event.comment?.body);
+    if (pr === undefined || words === null || !TRUSTED.has(event.comment?.author_association ?? "")) return null;
+    const autofix = words[0] === "autofix" ? (words[1] === "ci" ? "ci" : "all") : undefined;
+    return { ...repo, pr, trigger: "comment", reviews: autofix ? words.slice(words[1] === "ci" ? 2 : 1) : words, ...(autofix ? { autofix } : {}) };
   }
   return null;
 }

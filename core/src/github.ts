@@ -1,6 +1,6 @@
-// GitHub side of a run: load PR context and history, post reviews,
-// maintain sticky comments and per-review check runs.
-import type { Octokit } from "octokit";
+// GitHub side of a run: load PR context and history, post reviews, keep
+// sticky comments and check runs, read the other checks and their job logs.
+import { Octokit } from "octokit";
 import { commentableLines, renderPatch } from "./diff";
 import type { Job } from "./job";
 import type { Finding, Report } from "./report";
@@ -24,8 +24,17 @@ export interface PullRequest {
   head: string;
   headSha: string;
   cloneUrl: string;
+  fork: boolean;
   files: PullRequestFile[];
   diff: string;
+}
+
+export interface CheckRun {
+  name: string;
+  status: "queued" | "in_progress" | "completed";
+  conclusion: string | null;
+  url: string | null;
+  jobId: number | null;
 }
 
 export interface Commit {
@@ -83,6 +92,15 @@ const CONCLUSION: Record<Report["verdict"], Conclusion> = { pass: "success", war
 export const conclusionOf = (report: Report): Conclusion => CONCLUSION[report.verdict];
 
 export const headline = (message: string): string => message.split("\n", 1)[0]!.trim();
+
+const OWN_CHECK = "shrike/";
+
+export const jobIdOf = (url: string | null): number | null => {
+  const match = /\/actions\/runs\/\d+\/jobs?\/(\d+)/.exec(url ?? "");
+  return match ? Number(match[1]) : null;
+};
+
+export const isOwnRun = (url: string | null, runId: string | undefined): boolean => runId !== undefined && (url ?? "").includes(`/actions/runs/${runId}/`);
 
 export function mentionedNumbers(text: string, own: number, cap = 10): number[] {
   const numbers = new Set<number>();
@@ -148,6 +166,7 @@ export class PullRequestClient {
       head: data.head.ref,
       headSha: data.head.sha,
       cloneUrl: data.base.repo.clone_url,
+      fork: (data.head.repo?.full_name ?? "") !== data.base.repo.full_name,
       files: changed.map((f) => ({ path: f.filename, status: f.status, additions: f.additions, deletions: f.deletions, lines: commentableLines(f.patch ?? "") })),
       diff: changed.map((f) => renderPatch(f.filename, f.previous_filename, f.status, f.patch)).join("\n"),
     };
@@ -181,6 +200,24 @@ export class PullRequestClient {
         await this.octokit.rest.checks.update({ owner, repo, check_run_id: data.id, status: "completed", conclusion, output: { title, summary: summary.slice(0, 65_000) } });
       },
     };
+  }
+
+  async checks(pr: PullRequest, ownRunId?: string): Promise<CheckRun[]> {
+    const { owner, repo, headSha: ref } = pr;
+    const runs = await this.octokit.paginate(this.octokit.rest.checks.listForRef, { owner, repo, ref, per_page: 100 });
+    const { data: combined } = await this.octokit.rest.repos.getCombinedStatusForRef({ owner, repo, ref });
+    return [
+      ...runs
+        .filter((run) => !run.name.startsWith(OWN_CHECK) && !isOwnRun(run.details_url, ownRunId))
+        .map((run) => ({ name: run.name, status: run.status as CheckRun["status"], conclusion: run.conclusion, url: run.details_url, jobId: jobIdOf(run.details_url) })),
+      ...combined.statuses.map((status) => ({ name: status.context, status: status.state === "pending" ? ("in_progress" as const) : ("completed" as const), conclusion: status.state, url: status.target_url, jobId: null })),
+    ];
+  }
+
+  async jobLog(pr: PullRequest, jobId: number, token?: string): Promise<string> {
+    const octokit = token ? new Octokit({ auth: token }) : this.octokit;
+    const { data } = await octokit.rest.actions.downloadJobLogsForWorkflowRun({ owner: pr.owner, repo: pr.repo, job_id: jobId });
+    return typeof data === "string" ? data : "";
   }
 
   async stickyComment(pr: PullRequest, marker: string, body: string): Promise<StickyComment> {

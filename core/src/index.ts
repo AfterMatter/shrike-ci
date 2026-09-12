@@ -10,5 +10,7 @@ export { parseReport, parseShriken, reportSchema, shrikenReferences } from "./re
 export type { Report, Finding, ShrikenReference } from "./report";
 export { runJob, renderStatus, runRecord, SHRIKEN } from "./runner";
 export type { RunDeps, ReviewRun, RunRecord } from "./runner";
+export { AUTOFIX, TRAILER } from "./autofix";
+export type { AutofixDeps, PushIdentity } from "./autofix";
 export { actionsIdToken, DEFAULT_REVIEWS, OIDC_AUDIENCE, resolveSettings, reviewSchema, SettingsApi, settingsSchema } from "./settings";
-export type { Review, Settings } from "./settings";
+export type { AutofixMode, Review, Settings } from "./settings";

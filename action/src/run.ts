@@ -32,6 +32,7 @@ const runs = await runJob(job, {
   token,
   log: (line) => console.log(line),
   onRun: (run, pr) => api.report(runRecord(job, run, pr)),
+  autofix: { identity: () => api.autofixToken(), ownRunId: env("GITHUB_RUN_ID") },
 });
 
 const reportsDir = join(env("RUNNER_TEMP") ?? cwd, "shrike-reports");

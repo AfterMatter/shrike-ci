@@ -8,16 +8,17 @@ import type { AgentReply, Backend, SessionOptions } from "./types";
 const DEFAULT_TIMEOUT_MS = 20 * 60 * 1000;
 const SECRET_ENV = ["GITHUB_TOKEN", "INPUT_GITHUB_TOKEN", "GITHUB_APP_PRIVATE_KEY", "GITHUB_WEBHOOK_SECRET"];
 const REVIEW_PERMISSIONS = { read: "allow", glob: "allow", grep: "allow", list: "allow", lsp: "allow", todowrite: "allow", edit: "deny", bash: "deny", task: "deny", webfetch: "deny", websearch: "deny", external_directory: "deny", question: "deny", skill: "deny" };
+const FIX_PERMISSIONS = { ...REVIEW_PERMISSIONS, edit: "allow", bash: "allow" };
 
 export const acpBackend: Backend = {
   name: "acp",
   defaultModel: "opencode/big-pickle",
-  async open({ cwd, model = acpBackend.defaultModel, timeoutMs = DEFAULT_TIMEOUT_MS, log }: SessionOptions) {
+  async open({ cwd, model = acpBackend.defaultModel, timeoutMs = DEFAULT_TIMEOUT_MS, write = false, log }: SessionOptions) {
     const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !SECRET_ENV.includes(key)));
     const child = spawn(process.env.OPENCODE_BIN ?? "opencode", ["acp", "--cwd", cwd], {
       cwd,
       stdio: ["pipe", "pipe", "pipe"],
-      env: { ...env, OPENCODE_CONFIG_CONTENT: JSON.stringify({ share: "disabled", autoupdate: false, permission: REVIEW_PERMISSIONS, model }) },
+      env: { ...env, OPENCODE_CONFIG_CONTENT: JSON.stringify({ share: "disabled", autoupdate: false, permission: write ? FIX_PERMISSIONS : REVIEW_PERMISSIONS, model }) },
     });
     child.stderr?.on("data", (chunk: Buffer) => log(`opencode: ${chunk.toString().trim()}`));
     const stream = acp.ndJsonStream(

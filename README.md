@@ -48,7 +48,8 @@ jobs:
 3. Each review gets the repository checked out at the PR head, the full diff and its instructions, in a fresh agent session or in the shared session when that mode is on.
 4. Each review posts one pull request review with inline comments on changed lines, findings outside the diff in the review body, and one check run named `shrike/<review>`.
 5. When at least one review produced a report and the `shriken` setting is on (the default), Shriken runs once more with the reviews' numbered findings, the commits, the discussion, the linked issues and pull requests and the images of the description. It writes two or three short paragraphs for the human reviewer, with at most three blocks between them (a diff excerpt, a suggestion taken from a finding or an image from the description), each claim carrying an inline reference token such as `[finding:code-review#2]`, `[commit:abc1234]` or `[file:src/a.ts:12]`. The summary goes to the Shrike website only, where the tokens become links; on GitHub it leaves just a `shrike/shriken` check run and its row in the status comment. `shriken` is a reserved name and cannot be requested as a review.
-6. Every finished review, and the Shriken run, is reported back to the API so the website shows history and cost. One JSON report per run is also written to the `reports` output directory.
+6. When the `autofix` setting is `ci` or `all`, or the run was asked for with `@shrike autofix` (or `@shrike autofix ci`), or the head commit is an earlier autofix commit, Shrike waits for the other checks of the head commit (up to 30 minutes), then opens a session that may edit files and run commands. In `ci` mode it acts only when every Shrike review passed and fixes the failing checks from their job logs; in `all` mode it also resolves the findings of the reviews. It commits the working tree as the Shrike GitHub App with a `Shrike-Autofix: <mode>` trailer and pushes to the pull request branch with a token minted by the API, so the checks and Shrike run again on the new commit and the loop continues until everything is green, the agent changes nothing, or `autofixLimit` autofix commits sit in a row at the head (a human commit resets the count). Changes under `.github/workflows` are discarded, forks are refused, and the attempt is reported as the reserved `autofix` run with a `shrike/autofix` check. The Shrike GitHub App needs contents write and actions read on the repository.
+7. Every finished review, the Shriken run and the autofix run are reported back to the API so the website shows history and cost. One JSON report per run is also written to the `reports` output directory.
 
 ### Triggers
 
@@ -57,6 +58,7 @@ jobs:
 | PR opened, reopened, synchronize, ready for review | runs the configured reviews in order |
 | Comment `@shrike` on a PR | runs the configured reviews |
 | Comment `@shrike security-review cleanup` | runs only those reviews, in that order |
+| Comment `@shrike autofix` or `@shrike autofix ci` | runs the configured reviews, then one autofix attempt in `all` or `ci` mode that keeps going on the next pushes until green or the limit |
 | `repository_dispatch` type `shrike` | runs the job sent by the Shrike GitHub App |
 
 Draft pull requests are skipped until marked ready for review. Pull requests from forks get a read only token, so results cannot be posted for them with the default token.
