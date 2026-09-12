@@ -2,7 +2,7 @@
 // settings and the reviews to run, authenticated with an OIDC token.
 import { z } from "zod";
 
-export const DEFAULT_REVIEWS = ["slop-review", "code-review", "security-review"];
+export const DEFAULT_REVIEWS = ["slop-review", "intent-review", "code-review", "security-review"];
 export const OIDC_AUDIENCE = "shrike";
 
 export const settingsSchema = z.strictObject({
@@ -16,7 +16,10 @@ export const settingsSchema = z.strictObject({
 });
 
 export const reviewSchema = z.object({
-  name: z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/).max(64),
+  name: z
+    .string()
+    .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/)
+    .max(64),
   description: z.string().min(1),
   body: z.string().min(1),
 });
@@ -40,7 +43,11 @@ export async function actionsIdToken(env: Record<string, string | undefined> = p
 }
 
 export class SettingsApi {
-  constructor(private readonly url: string, private readonly token: () => Promise<string>, private readonly fetchImpl = fetch) {}
+  constructor(
+    private readonly url: string,
+    private readonly token: () => Promise<string>,
+    private readonly fetchImpl = fetch,
+  ) {}
 
   private async call(path: string, init: RequestInit = {}): Promise<unknown> {
     const res = await this.fetchImpl(`${this.url}${path}`, { ...init, headers: { authorization: `Bearer ${await this.token()}`, "content-type": "application/json" } });
