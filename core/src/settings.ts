@@ -11,6 +11,8 @@ export const settingsSchema = z.strictObject({
   model: z.string().min(1).optional(),
   session: z.enum(["fresh", "shared"]).default("fresh"),
   shriken: z.boolean().default(true),
+  autofix: z.enum(["off", "ci", "all"]).default("off"),
+  autofixLimit: z.number().int().min(1).max(20).default(5),
 });
 
 export const reviewSchema = z.object({
@@ -21,6 +23,7 @@ export const reviewSchema = z.object({
 
 export type Settings = z.infer<typeof settingsSchema>;
 export type Review = z.infer<typeof reviewSchema>;
+export type AutofixMode = Exclude<Settings["autofix"], "off">;
 
 export function resolveSettings(raw: unknown): Settings {
   const settings = settingsSchema.parse(raw ?? {});
