@@ -32,11 +32,15 @@ describe("buildShrikenPrompt", () => {
     expect(prompt).not.toContain('"findings"');
   });
 
-  test("asks for short referenced paragraphs instead of a document", () => {
+  test("asks for short referenced paragraphs with at most three diff, suggestion or image blocks", () => {
     const prompt = buildShrikenPrompt(pr, history, runs);
     const contract = prompt.slice(prompt.indexOf("# Output contract"));
-    expect(contract).toContain("two or three short paragraphs of at most 90 words each");
-    expect(contract).toContain("No headings, no lists, no code fences, no tables, no images.");
+    expect(contract).toContain("two or three paragraphs of plain sentences, at most 90 words each");
+    expect(contract).toContain("No headings, no lists, no tables, no links.");
+    expect(contract).toContain("at most three blocks in total");
+    expect(contract).toContain("- a \`\`\`diff block quoting at most 15 lines of the diff above that matter most, right after a sentence naming that file with a [file:<path>:<line>] token");
+    expect(contract).toContain("- a \`\`\`suggestion block copied from a finding, right after a sentence with that finding's token");
+    expect(contract).toContain("as ![alt](url) with a url from the list above");
     expect(contract).toContain("- [finding:<review>#<n>] the n-th finding of that review as numbered above, for example [finding:code-review#2]");
     expect(contract).toContain("- [review:<name>] a whole review, for example [review:security-review]");
     expect(contract).toContain("- [commit:<sha7>] a commit by its first 7 characters");
@@ -46,7 +50,6 @@ describe("buildShrikenPrompt", () => {
     expect(contract).toContain("Tokens only name things listed above; never invent one.");
     expect(contract).toContain("The only other markup allowed is inline code in backticks and **bold**.");
     expect(contract).not.toContain("Before and after");
-    expect(contract).not.toContain("![");
     expect(contract).not.toContain("long form");
     expect(prompt).not.toContain("### ");
   });

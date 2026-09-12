@@ -106,7 +106,11 @@ ${clipDiff(pr.diff)}
 \`\`\`
 
 # Output contract
-Write two or three short paragraphs of at most 90 words each, in plain sentences, that tell the reviewer what the pull request does, what matters in what the reviews found, and what to decide: merge, request changes, or the questions to ask. No headings, no lists, no code fences, no tables, no images.
+Write the summary a reviewer reads before deciding: two or three paragraphs of plain sentences, at most 90 words each, that tell what the pull request does, what matters in what the reviews found, and what to decide: merge, request changes, or the questions to ask. No headings, no lists, no tables, no links.
+Between the paragraphs, show what the reviewer must see with at most three blocks in total, each on its own lines:
+- a \`\`\`diff block quoting at most 15 lines of the diff above that matter most, right after a sentence naming that file with a [file:<path>:<line>] token
+- a \`\`\`suggestion block copied from a finding, right after a sentence with that finding's token
+- an image of the description as ![alt](url) with a url from the list above, for example before and after screenshots; never any other url
 Reference everything you mention with inline tokens so the website can link them:
 - [finding:<review>#<n>] the n-th finding of that review as numbered above, for example [finding:code-review#2]
 - [review:<name>] a whole review, for example [review:security-review]
@@ -118,5 +122,5 @@ Rules:
 - Tokens only name things listed above; never invent one.
 - The only other markup allowed is inline code in backticks and **bold**.
 - Do not output JSON.
-- Answer with the text inside one \`\`\`markdown fenced block and nothing after it.`;
+- Answer with the document inside one \`\`\`markdown fenced block and nothing after it.`;
 }
