@@ -94,6 +94,7 @@ describe("capture prompts", () => {
     expect(before).toContain('1. Call browser_start_video with filename "C:/shots/dir/before.webm" and size { "width": 1280, "height": 800 }.');
     expect(before).toContain('browser_take_screenshot with filename "C:/shots/dir/before-<name>.png" and no other options.');
     expect(before).toContain("3. Call browser_stop_video.");
+    expect(before).toContain("A page that answers with an error or does not exist yet is still a shot: screenshot it as it is");
     expect(before).toContain("# Shots\n1. home: http://localhost:5173/\n   Steps: wait for the list\n2. settings: http://localhost:5173/#/settings\n\n# Output contract");
     expect(before).toContain('{"taken": ["home"]}');
     expect(before).not.toContain("Take the same shots again");

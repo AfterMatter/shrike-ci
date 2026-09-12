@@ -109,7 +109,7 @@ export function buildCaptureShotsPrompt(side: Side, url: string, shots: Shot[], 
 1. Call browser_start_video with filename "${fileIn(dir, videoFile(side))}" and size { "width": 1280, "height": 800 }.
 2. For each shot below, in order: browser_navigate to its url, wait for the page to settle, follow its steps, then browser_take_screenshot with filename "${fileIn(dir, shotFile(side, "<name>"))}" and no other options.
 3. Call browser_stop_video.
-When a page does not load or a step cannot be done, skip that shot and go on. Never edit files or run commands.
+A page that answers with an error or does not exist yet is still a shot: screenshot it as it is, the reviewer wants to see the difference. Skip a shot only when the browser cannot reach the url at all or a step cannot be done, and go on. Never edit files or run commands.
 
 # Shots
 ${list(shots, (shot, index) => `${index + 1}. ${shot.name}: ${url}${shot.path}${shot.steps ? `\n   Steps: ${shot.steps}` : ""}`)}
