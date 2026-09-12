@@ -2,7 +2,7 @@
 // settings and the reviews to run, authenticated with an OIDC token.
 import { z } from "zod";
 
-export const DEFAULT_REVIEWS = ["code-review", "slop-review", "security-review"];
+export const DEFAULT_REVIEWS = ["slop-review", "code-review", "security-review"];
 export const OIDC_AUDIENCE = "shrike";
 
 export const settingsSchema = z.strictObject({

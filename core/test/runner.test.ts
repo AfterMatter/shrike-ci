@@ -75,28 +75,28 @@ describe("runJob", () => {
     const { trace, backend, gh } = fakes({ "code-review": [report("pass")], "slop-review": [report("warn")], "security-review": [report("fail")], shriken }, pr);
     const seen: [string, string][] = [];
     const runs = await runJob({ owner: "o", repo: "r", pr: 1, trigger: "pull_request", reviews: [] }, { gh, backend, settings: settings(), reviews, cwd: dir, log: () => {}, onRun: async (run) => void seen.push([run.review, run.status]) });
-    expect(runs.map((r) => [r.review, r.status, r.report?.verdict])).toEqual([["code-review", "done", "pass"], ["slop-review", "done", "warn"], ["security-review", "done", "fail"], ["shriken", "done", "fail"]]);
+    expect(runs.map((r) => [r.review, r.status, r.report?.verdict])).toEqual([["slop-review", "done", "warn"], ["code-review", "done", "pass"], ["security-review", "done", "fail"], ["shriken", "done", "fail"]]);
     expect(trace.sessions).toHaveLength(4);
     expect(trace.sessions.map((s) => s.prompts.length)).toEqual([1, 1, 1, 1]);
     expect(trace.sessions.every((s) => s.closed)).toBe(true);
     expect(trace.sessions.map((s) => s.model)).toEqual(["fake/default", "fake/default", "fake/default", "fake/default"]);
-    expect(trace.sessions[1]!.prompts[0]).toContain("# Review: slop-review\nRules of slop-review.");
+    expect(trace.sessions[0]!.prompts[0]).toContain("# Review: slop-review\nRules of slop-review.");
     expect(trace.sessions.every((s) => s.prompts[0]!.includes("# Diff"))).toBe(true);
     expect(trace.sessions[3]!.prompts[0]).toContain("## Review: security-review\nVerdict: fail");
     expect(trace.sessions[3]!.prompts[0]).toContain("- abcdef0 Add line");
     expect(trace.histories).toBe(1);
-    expect(trace.reviews).toEqual(["code-review", "slop-review", "security-review"]);
-    expect(trace.checks.map((c) => [c.review, c.conclusion])).toEqual([["code-review", "success"], ["slop-review", "neutral"], ["security-review", "failure"], ["shriken", "neutral"]]);
+    expect(trace.reviews).toEqual(["slop-review", "code-review", "security-review"]);
+    expect(trace.checks.map((c) => [c.review, c.conclusion])).toEqual([["slop-review", "neutral"], ["code-review", "success"], ["security-review", "failure"], ["shriken", "neutral"]]);
     expect(runs.every((r) => r.usage?.tokens === 10 && r.startedAt && r.finishedAt)).toBe(true);
     expect(runs.at(-1)!.report).toEqual({ summary: SUMMARY, verdict: "fail", findings: [] });
     expect(runs.at(-1)!.posted).toBeUndefined();
     expect(trace.comments).toEqual([]);
-    expect(trace.statuses[0]).toContain("| code-review | queued |");
+    expect(trace.statuses[0]).toContain("| slop-review | queued |");
     expect(trace.statuses[0]).not.toContain("shriken");
     expect(trace.statuses.at(-1)).toContain("| security-review | done | fail, 0 finding(s) | [review](https://r/security-review) |");
     expect(trace.statuses.at(-1)).toContain("| shriken | done | summary written |  |");
     expect(trace.statuses.at(-1)).not.toContain("[summary]");
-    expect(seen).toEqual([["code-review", "done"], ["slop-review", "done"], ["security-review", "done"], ["shriken", "done"]]);
+    expect(seen).toEqual([["slop-review", "done"], ["code-review", "done"], ["security-review", "done"], ["shriken", "done"]]);
   });
 
   test("retries once on invalid output, isolates failures, honours requested reviews, model and shriken off", async () => {
@@ -198,7 +198,7 @@ describe("runJob", () => {
     const pr = prAt(dir, sha);
     const { trace, backend, gh } = fakes({ "code-review": [report("pass")], "slop-review": [report("pass")], "security-review": [report("pass")], shriken }, pr);
     const runs = await runJob({ owner: "o", repo: "r", pr: 1, trigger: "pull_request", reviews: [] }, { gh, backend, settings: settings({ session: "shared" }), reviews, cwd: dir, log: () => {} });
-    expect(runs.map((r) => [r.review, r.status, r.report?.verdict])).toEqual([["code-review", "done", "pass"], ["slop-review", "done", "pass"], ["security-review", "done", "pass"], ["shriken", "done", "pass"]]);
+    expect(runs.map((r) => [r.review, r.status, r.report?.verdict])).toEqual([["slop-review", "done", "pass"], ["code-review", "done", "pass"], ["security-review", "done", "pass"], ["shriken", "done", "pass"]]);
     expect(trace.sessions).toHaveLength(1);
     const prompts = trace.sessions[0]!.prompts;
     expect(prompts).toHaveLength(4);
@@ -206,7 +206,7 @@ describe("runJob", () => {
     expect(prompts[0]).toContain("Pull request #1");
     expect(prompts[1]).not.toContain("# Diff");
     expect(prompts[1]).toContain("Same pull request and checkout as your previous review");
-    expect(prompts[1]).toContain("# Review: slop-review");
+    expect(prompts[1]).toContain("# Review: code-review");
     expect(prompts[2]).toContain("# Review: security-review");
     expect(prompts[3]).toStartWith("You are Shriken");
     expect(trace.sessions[0]!.closed).toBe(true);
@@ -218,10 +218,10 @@ describe("runJob", () => {
     const pr = prAt(dir, sha);
     const { trace, backend, gh } = fakes({ "code-review": [report("warn")], "slop-review": ["garbage", "more garbage"], "security-review": [report("pass")], shriken }, pr);
     const runs = await runJob({ owner: "o", repo: "r", pr: 1, trigger: "pull_request", reviews: [] }, { gh, backend, settings: settings({ session: "shared" }), reviews, cwd: dir, log: () => {} });
-    expect(runs.map((r) => [r.status, r.report?.verdict])).toEqual([["done", "warn"], ["error", undefined], ["done", "pass"], ["done", "warn"]]);
+    expect(runs.map((r) => [r.status, r.report?.verdict])).toEqual([["error", undefined], ["done", "warn"], ["done", "pass"], ["done", "warn"]]);
     expect(trace.sessions).toHaveLength(2);
-    expect(trace.sessions[0]!.prompts).toHaveLength(3);
-    expect(trace.sessions[1]!.prompts).toHaveLength(2);
+    expect(trace.sessions[0]!.prompts).toHaveLength(2);
+    expect(trace.sessions[1]!.prompts).toHaveLength(3);
     expect(trace.sessions[1]!.prompts[0]).toContain("# Diff");
     expect(trace.sessions.every((s) => s.closed)).toBe(true);
   });

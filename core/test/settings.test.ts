@@ -16,6 +16,10 @@ describe("settings schema", () => {
     expect(resolveSettings({ reviews: [] }).reviews).toEqual(DEFAULT_REVIEWS);
   });
 
+  test("the default reviews start with slop-review", () => {
+    expect(DEFAULT_REVIEWS).toEqual(["slop-review", "code-review", "security-review"]);
+  });
+
   test("configured values win and unknown keys are rejected", () => {
     expect(resolveSettings({ reviews: ["cleanup"], model: "x/y", session: "shared", shriken: false })).toEqual({ reviews: ["cleanup"], backend: "acp", model: "x/y", session: "shared", shriken: false });
     expect(() => settingsSchema.parse({ shriken: "yes" })).toThrow();
