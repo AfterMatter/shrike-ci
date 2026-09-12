@@ -89,19 +89,19 @@ describe("capture prompts", () => {
   });
 
   test("the shots prompt names the side, the video, every shot url with its steps, and asks which were taken", () => {
-    const before = buildCaptureShotsPrompt("before", "http://localhost:5173", shots);
+    const before = buildCaptureShotsPrompt("before", "http://localhost:5173", shots, "C:\\shots\\dir");
     expect(before).toStartWith("The application at http://localhost:5173 now runs the base branch, without this pull request. Use the playwright browser tools:");
-    expect(before).toContain('1. Call browser_start_video with filename "before.webm" and size { "width": 1280, "height": 800 }.');
-    expect(before).toContain('browser_take_screenshot with filename "before-<name>.png" and no other options.');
+    expect(before).toContain('1. Call browser_start_video with filename "C:/shots/dir/before.webm" and size { "width": 1280, "height": 800 }.');
+    expect(before).toContain('browser_take_screenshot with filename "C:/shots/dir/before-<name>.png" and no other options.');
     expect(before).toContain("3. Call browser_stop_video.");
     expect(before).toContain("# Shots\n1. home: http://localhost:5173/\n   Steps: wait for the list\n2. settings: http://localhost:5173/#/settings\n\n# Output contract");
     expect(before).toContain('{"taken": ["home"]}');
     expect(before).not.toContain("Take the same shots again");
-    const after = buildCaptureShotsPrompt("after", "http://localhost:5173", shots);
+    const after = buildCaptureShotsPrompt("after", "http://localhost:5173", shots, "/tmp/shots");
     expect(after).toStartWith("The application at http://localhost:5173 now runs the pull request head, with the change. Take the same shots again so every pair lines up.");
-    expect(after).toContain('"after.webm"');
-    expect(after).toContain('"after-<name>.png"');
-    expect(buildCaptureShotsPrompt("after", "http://localhost:5173", [])).toContain("# Shots\n(none)");
+    expect(after).toContain('"/tmp/shots/after.webm"');
+    expect(after).toContain('"/tmp/shots/after-<name>.png"');
+    expect(buildCaptureShotsPrompt("after", "http://localhost:5173", [], "/tmp/shots")).toContain("# Shots\n(none)");
     expect(CAPTURE_TAKEN_RETRY_PROMPT).toContain('{"taken": ["<name>", ...]}');
   });
 

@@ -729,9 +729,9 @@ describe("capture", () => {
     expect(session.prompts[0]).toContain(`The application will be served at http://127.0.0.1:${at}/.`);
     expect(session.prompts[1]).toStartWith(`The application at http://127.0.0.1:${at}/ now runs the base branch, without this pull request.`);
     expect(session.prompts[1]).toContain(`1. home: http://127.0.0.1:${at}//\n   Steps: wait for the marker`);
-    expect(session.prompts[1]).toContain('browser_start_video with filename "before.webm"');
+    expect(session.prompts[1]).toContain(`browser_start_video with filename "${session.captureDir!.replace(/\\/g, "/")}/before.webm"`);
     expect(session.prompts[2]).toStartWith(`The application at http://127.0.0.1:${at}/ now runs the pull request head, with the change. Take the same shots again`);
-    expect(session.prompts[2]).toContain('browser_take_screenshot with filename "after-<name>.png"');
+    expect(session.prompts[2]).toContain(`browser_take_screenshot with filename "${session.captureDir!.replace(/\\/g, "/")}/after-<name>.png"`);
     expect(trace.published).toHaveLength(1);
     const { branch, files, message, token } = trace.published[0]!;
     expect([branch, message, token]).toEqual(["shrike-media", `Shrike capture of #1 at ${head.slice(0, 7)}`, "app-token"]);

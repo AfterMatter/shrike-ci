@@ -21,7 +21,7 @@ export const opencodeConfig = (model: string, write: boolean, captureDir?: strin
         mcp: {
           playwright: {
             type: "local",
-            command: ["bunx", PLAYWRIGHT_MCP, "--headless", "--isolated", "--browser", "chrome", "--caps", "devtools", "--viewport-size", "1280x800", "--output-dir", captureDir],
+            command: ["bunx", PLAYWRIGHT_MCP, "--headless", "--isolated", "--browser", "chrome", "--caps", "devtools", "--viewport-size", "1280x800", "--allow-unrestricted-file-access", "--output-dir", captureDir],
             cwd: captureDir,
             enabled: true,
           },

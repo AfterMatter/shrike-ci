@@ -3,6 +3,7 @@ import { access, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { acpBackend, opencodeConfig } from "../src/backends/acp";
+import { fileIn } from "../src/capture";
 
 const live = process.env.SHRIKE_LIVE === "1" && Bun.which("opencode") !== null;
 const SERVER = join(import.meta.dir, "fixtures", "serve.ts");
@@ -21,7 +22,7 @@ test("the opencode config denies writing and the browser for reviews, opens writ
   expect(capture.permission).toMatchObject({ edit: "deny", bash: "deny", "playwright_*": "allow" });
   expect(capture.mcp.playwright).toEqual({
     type: "local",
-    command: ["bunx", "@playwright/mcp@0.0.80", "--headless", "--isolated", "--browser", "chrome", "--caps", "devtools", "--viewport-size", "1280x800", "--output-dir", "/tmp/shots"],
+    command: ["bunx", "@playwright/mcp@0.0.80", "--headless", "--isolated", "--browser", "chrome", "--caps", "devtools", "--viewport-size", "1280x800", "--allow-unrestricted-file-access", "--output-dir", "/tmp/shots"],
     cwd: "/tmp/shots",
     enabled: true,
   });
@@ -38,12 +39,12 @@ test.skipIf(!live)("acp backend with a capture directory opens a page in the bro
   try {
     for (let tries = 0; tries < 30 && !(await fetch(`http://127.0.0.1:${port}/`).then(() => true, () => false)); tries++) await new Promise((resolve) => setTimeout(resolve, 500));
     const reply = await session.prompt(
-      `Use the playwright browser tools: call browser_start_video with filename "after.webm" and size { "width": 1280, "height": 800 }, browser_navigate to http://127.0.0.1:${port}/, browser_take_screenshot with filename "after-home.png" and no other options, then browser_stop_video. Reply with one \`\`\`json block: {"taken": ["home"]}. Nothing else.`,
+      `Use the playwright browser tools: call browser_start_video with filename "${fileIn(captureDir, "after.webm")}" and size { "width": 1280, "height": 800 }, browser_navigate to http://127.0.0.1:${port}/, browser_take_screenshot with filename "${fileIn(captureDir, "after-home.png")}" and no other options, then browser_stop_video. Reply with one \`\`\`json block: {"taken": ["home"]}. Nothing else.`,
     );
     expect(reply.text).toContain('"taken"');
     await access(join(captureDir, "after-home.png"));
     await access(join(captureDir, "after.webm"));
-    expect(logs.some((line) => line.includes("playwright"))).toBe(true);
+    expect(logs.filter((line) => line.startsWith("tool ")).join("\n")).toContain("playwright");
   } finally {
     await session.close();
     app.kill();

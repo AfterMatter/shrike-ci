@@ -184,7 +184,7 @@ export async function runJob(job: Job, deps: RunDeps): Promise<ReviewRun[]> {
         const take = async (side: Side, dir: string) => {
           const stop = await serve(command, dir, url, (line) => deps.log(`[capture] ${line}`), deps.capture!.startTimeoutMs);
           try {
-            await ask(run, session, buildCaptureShotsPrompt(side, url, shots), CAPTURE_TAKEN_RETRY_PROMPT, parseTaken, deps.log);
+            await ask(run, session, buildCaptureShotsPrompt(side, url, shots, outputDir), CAPTURE_TAKEN_RETRY_PROMPT, parseTaken, deps.log);
           } finally {
             await stop();
           }

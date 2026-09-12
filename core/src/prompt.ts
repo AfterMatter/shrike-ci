@@ -1,7 +1,7 @@
 // Builds the prompts: reviews get PR context and the JSON contract, capture
 // plans and takes the shots, Shriken gets history and reports, autofix the failures.
 import type { Problems } from "./autofix";
-import { ABOUT, CAPTURE, shotFile, SIDES, videoFile, type Shot, type Side } from "./capture";
+import { ABOUT, CAPTURE, fileIn, shotFile, SIDES, videoFile, type Shot, type Side } from "./capture";
 import type { PullRequest, PullRequestHistory } from "./github";
 import type { ReviewRun } from "./runner";
 import type { AutofixMode, Review } from "./settings";
@@ -104,10 +104,10 @@ ${clipDiff(pr.diff)}
 \`\`\``;
 }
 
-export function buildCaptureShotsPrompt(side: Side, url: string, shots: Shot[]): string {
+export function buildCaptureShotsPrompt(side: Side, url: string, shots: Shot[], dir: string): string {
   return `The application at ${url} now runs ${ABOUT[side]}.${side === "after" ? " Take the same shots again so every pair lines up." : ""} Use the playwright browser tools:
-1. Call browser_start_video with filename "${videoFile(side)}" and size { "width": 1280, "height": 800 }.
-2. For each shot below, in order: browser_navigate to its url, wait for the page to settle, follow its steps, then browser_take_screenshot with filename "${shotFile(side, "<name>")}" and no other options.
+1. Call browser_start_video with filename "${fileIn(dir, videoFile(side))}" and size { "width": 1280, "height": 800 }.
+2. For each shot below, in order: browser_navigate to its url, wait for the page to settle, follow its steps, then browser_take_screenshot with filename "${fileIn(dir, shotFile(side, "<name>"))}" and no other options.
 3. Call browser_stop_video.
 When a page does not load or a step cannot be done, skip that shot and go on. Never edit files or run commands.
 

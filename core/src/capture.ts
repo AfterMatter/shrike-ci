@@ -52,6 +52,8 @@ export const shotFile = (side: Side, name: string): string => `${side}-${name}.p
 
 export const videoFile = (side: Side): string => `${side}.webm`;
 
+export const fileIn = (dir: string, file: string): string => `${dir.replace(/\\/g, "/")}/${file}`;
+
 export const mediaPath = (pr: PullRequest, file: string): string => `pr-${pr.number}/${pr.headSha.slice(0, 7)}/${file}`;
 
 export const mediaUrl = (pr: PullRequest, sha: string, file: string): string => `https://raw.githubusercontent.com/${pr.owner}/${pr.repo}/${sha}/${mediaPath(pr, file)}`;
