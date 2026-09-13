@@ -665,12 +665,12 @@ describe("autofix", () => {
         autofix: {
           ...autofix(fresh.bare),
           identity: async () => {
-            throw new Error("Shrike API /v1/autofix-token answered 503");
+            throw new Error("Shrike API /v1/token answered 503");
           },
         },
       },
     );
-    expect(deniedRuns.at(-1)).toMatchObject({ review: "autofix", status: "error", error: "Shrike API /v1/autofix-token answered 503" });
+    expect(deniedRuns.at(-1)).toMatchObject({ review: "autofix", status: "error", error: "Shrike API /v1/token answered 503" });
     expect(denied.trace.sessions).toHaveLength(1);
   });
 });

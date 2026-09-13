@@ -68,7 +68,7 @@ export class SettingsApi {
     await this.call("/v1/runs", { method: "POST", body: JSON.stringify(run) });
   }
 
-  async autofixToken(): Promise<{ token: string; name: string; email: string }> {
-    return z.object({ token: z.string().min(1), name: z.string().min(1), email: z.string().min(1) }).parse(await this.call("/v1/autofix-token", { method: "POST" }));
+  async installationToken(): Promise<{ token: string; expiresAt: string; name: string; email: string }> {
+    return z.object({ token: z.string().min(1), expiresAt: z.string().min(1), name: z.string().min(1), email: z.string().min(1) }).parse(await this.call("/v1/token", { method: "POST" }));
   }
 }

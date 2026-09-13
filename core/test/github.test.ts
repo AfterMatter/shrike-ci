@@ -1,11 +1,48 @@
 import { describe, expect, test } from "bun:test";
 import type { Octokit } from "octokit";
-import { headline, imagesOf, isOwnRun, jobIdOf, mentionedNumbers, PullRequestClient, renderFinding, renderReviewBody, splitFindings, STATUS_MARKER, type PullRequestFile } from "../src/github";
+import { headline, imagesOf, isOwnRun, jobIdOf, mentionedNumbers, PullRequestClient, REFRESH_MARGIN_MS, refreshingAuth, renderFinding, renderReviewBody, splitFindings, STATUS_MARKER, type PullRequestFile } from "../src/github";
 import type { Finding } from "../src/report";
 
 const file = (path: string, lines: number[]): PullRequestFile => ({ path, status: "modified", additions: 1, deletions: 0, lines: new Set(lines) });
 const finding = (extra: Partial<Finding>): Finding => ({ path: "a.ts", line: 3, severity: "warning", title: "t", body: "b", ...extra });
 const OTHER_MARKER = "<!-- shrike:other -->";
+
+describe("refreshingAuth", () => {
+  const request = (seen: string[]) =>
+    Object.assign(
+      async (options: { headers: Record<string, string> }) => {
+        seen.push(options.headers.authorization ?? "");
+        return options;
+      },
+      { endpoint: { merge: (route: string, parameters?: Record<string, unknown>) => ({ ...parameters, url: route, headers: {} as Record<string, string> }) } },
+    ) as unknown as Octokit["request"];
+  const at = (ms: number) => new Date(Date.now() + ms).toISOString();
+
+  test("signs every request with the first token and mints a new one only when the current one is near its expiry", async () => {
+    const minted: string[] = [];
+    const seen: string[] = [];
+    const mint = async () => ({ token: `t${minted.push("x")}`, expiresAt: at(60 * 60 * 1000), name: "n", email: "e" });
+    const { hook } = refreshingAuth(mint, { token: "first", expiresAt: at(60 * 60 * 1000), name: "n", email: "e" })();
+    await hook(request(seen), "GET /a");
+    await hook(request(seen), { method: "GET", url: "/b" });
+    expect(seen).toEqual(["token first", "token first"]);
+    expect(minted).toHaveLength(0);
+    const expiring = refreshingAuth(mint, { token: "old", expiresAt: at(REFRESH_MARGIN_MS - 1000), name: "n", email: "e" })();
+    await expiring.hook(request(seen), "GET /c");
+    await expiring.hook(request(seen), "GET /d");
+    expect(seen.slice(2)).toEqual(["token t1", "token t1"]);
+    expect(minted).toHaveLength(1);
+  });
+
+  test("a token without expiry, the job token, is never replaced", async () => {
+    const seen: string[] = [];
+    const { hook } = refreshingAuth(async () => {
+      throw new Error("must not mint");
+    }, { token: "job", name: "n", email: "e" })();
+    await hook(request(seen), "GET /a");
+    expect(seen).toEqual(["token job"]);
+  });
+});
 
 describe("splitFindings", () => {
   test("keeps only findings whose line is commentable", () => {

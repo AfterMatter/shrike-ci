@@ -132,6 +132,20 @@ describe("SettingsApi", () => {
     await expect(denied.report({ pr: 1 })).rejects.toThrow(/\/v1\/runs answered 401/);
   });
 
+  test("installationToken posts to /v1/token and returns the minted identity", async () => {
+    const calls: Call[] = [];
+    const api = new SettingsApi(
+      "https://api.shrike.test",
+      async () => "t",
+      fakeFetch(calls, () => Response.json({ token: "ghs_1", expiresAt: "2026-01-01T01:00:00Z", name: "shrike[bot]", email: "9+shrike[bot]@users.noreply.github.com", extra: 1 })),
+    );
+    expect(await api.installationToken()).toEqual({ token: "ghs_1", expiresAt: "2026-01-01T01:00:00Z", name: "shrike[bot]", email: "9+shrike[bot]@users.noreply.github.com" });
+    expect(calls[0]!.url).toBe("https://api.shrike.test/v1/token");
+    expect(calls[0]!.init!.method).toBe("POST");
+    const bare = new SettingsApi("https://api.shrike.test", async () => "t", fakeFetch([], () => Response.json({ token: "ghs_1", name: "n", email: "e" })));
+    await expect(bare.installationToken()).rejects.toThrow();
+  });
+
   test("report posts the run as JSON", async () => {
     const calls: Call[] = [];
     const api = new SettingsApi(

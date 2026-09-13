@@ -2,7 +2,7 @@
 // in this repository and by the hosted Shrike server.
 export { getBackend, backends } from "./backends";
 export type { Backend, AgentSession } from "./backends";
-export { PullRequestClient } from "./github";
+export { PullRequestClient, refreshingAuth } from "./github";
 export type { PullRequest, PullRequestHistory, PushIdentity } from "./github";
 export { jobFromEvent, jobSchema, parseTrigger } from "./job";
 export type { Job } from "./job";

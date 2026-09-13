@@ -35,6 +35,7 @@ export interface PushIdentity {
   token: string;
   name: string;
   email: string;
+  expiresAt?: string;
 }
 
 export interface MediaFile {
@@ -98,6 +99,7 @@ export interface StickyComment {
 }
 
 export const STATUS_MARKER = "<!-- shrike:status -->";
+export const REFRESH_MARGIN_MS = 5 * 60 * 1000;
 const SHRIKE_MARKER = "<!-- shrike:";
 const VERDICT_LABEL = { pass: "pass", warn: "warnings", fail: "changes needed" } as const;
 const CONCLUSION: Record<Report["verdict"], Conclusion> = { pass: "success", warn: "neutral", fail: "failure" };
@@ -159,6 +161,24 @@ export function splitFindings(report: Report, files: PullRequestFile[]): { inlin
     inline.push(rangeOk ? finding : { ...finding, startLine: undefined });
   }
   return { inline, outside };
+}
+
+export function refreshingAuth(mint: () => Promise<PushIdentity>, first?: PushIdentity): () => { hook: Octokit["auth"] } {
+  let current = first ? Promise.resolve(first) : undefined;
+  const token = async (): Promise<string> => {
+    const minted = await (current ??= mint());
+    if (!minted.expiresAt || Date.parse(minted.expiresAt) - Date.now() > REFRESH_MARGIN_MS) return minted.token;
+    current = mint();
+    return (await current).token;
+  };
+  return () =>
+    Object.assign(async () => ({ type: "token", tokenType: "installation", token: await token() }), {
+      hook: async (request: Octokit["request"], route: string | Record<string, unknown>, parameters?: Record<string, unknown>) => {
+        const options = typeof route === "string" ? request.endpoint.merge(route, parameters) : request.endpoint.merge(route as never);
+        options.headers.authorization = `token ${await token()}`;
+        return request(options as never);
+      },
+    }) as never;
 }
 
 export class PullRequestClient {

@@ -9,7 +9,7 @@ inputs:
     description: Shrike API base URL shown on the website, usually the SHRIKE_API_URL repository variable. The job needs the id-token write permission.
     required: true
   github_token:
-    description: Token used to read the PR and post reviews, checks and comments.
+    description: Job token used to read the PR and post results only when the Shrike GitHub App is not installed on the repository.
     required: false
     default: ${{ github.token }}
   opencode_version:
