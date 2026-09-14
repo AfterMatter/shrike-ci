@@ -2,10 +2,7 @@
   "name": "@shrike/core",
   "private": true,
   "type": "module",
-  "exports": {
-    ".": "./src/index.ts",
-    "./*": "./src/*.ts"
-  },
+  "main": "src/index",
   "dependencies": {
     "@agentclientprotocol/sdk": "^1.4.0",
     "octokit": "^5.0.0",
