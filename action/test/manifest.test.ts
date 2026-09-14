@@ -7,7 +7,7 @@ interface Manifest {
 }
 
 interface Workflow {
-  jobs: { review: { permissions: Record<string, string>; steps: { uses?: string; with?: Record<string, string> }[] } };
+  jobs: { review: { if: string; permissions: Record<string, string>; steps: { uses?: string; with?: Record<string, string> }[] } };
 }
 
 const read = async (path: string) => Bun.YAML.parse(await Bun.file(resolve(import.meta.dir, "..", path)).text());
@@ -24,10 +24,11 @@ describe("action manifest", () => {
     expect(run?.env?.INPUT_GITHUB_TOKEN).toBe("${{ inputs.github_token }}");
   });
 
-  test("the self review workflow grants the id token and passes the api url", async () => {
+  test("the self review workflow runs the published action against the hosted API with only the id token and a shrike comment filter", async () => {
     const { jobs } = (await read("../.github/workflows/shrike.yml")) as Workflow;
-    expect(jobs.review.permissions["id-token"]).toBe("write");
-    const step = jobs.review.steps.find((candidate) => candidate.uses === "./action");
-    expect(step?.with).toEqual({ api_url: "${{ vars.SHRIKE_API_URL }}" });
+    expect(jobs.review.permissions).toEqual({ contents: "read", "id-token": "write" });
+    expect(jobs.review.if).toContain("startsWith(github.event.comment.body, 'shrike')");
+    const step = jobs.review.steps.find((candidate) => candidate.uses === "AfterMatter/shrike-ci/action@main");
+    expect(step?.with).toEqual({ api_url: "https://shriken.vercel.app" });
   });
 });
