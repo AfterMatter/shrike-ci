@@ -9,7 +9,7 @@ import { baseWorktree, CAPTURE, CAPTURE_MARKER, captureHeadline, captureOf, coll
 import { ensureCheckout } from "./checkout";
 import { conclusionOf, headline, STATUS_MARKER, type CheckHandle, type MediaFile, type PullRequest, type PullRequestClient } from "./github";
 import type { Job } from "./job";
-import { AUTOFIX_RETRY_PROMPT, buildAutofixPrompt, buildCapturePlanPrompt, buildCaptureShotsPrompt, buildPrompt, buildShrikenPrompt, CAPTURE_PLAN_RETRY_PROMPT, CAPTURE_TAKEN_RETRY_PROMPT, RETRY_PROMPT, SHRIKEN_RETRY_PROMPT } from "./prompt";
+import { ASK, askReview, AUTOFIX_RETRY_PROMPT, buildAutofixPrompt, buildCapturePlanPrompt, buildCaptureShotsPrompt, buildPrompt, buildShrikenPrompt, CAPTURE_PLAN_RETRY_PROMPT, CAPTURE_TAKEN_RETRY_PROMPT, RETRY_PROMPT, SHRIKEN_RETRY_PROMPT } from "./prompt";
 import { parseReport, parseShriken, parseShrikenScores, shrikenReferences, type Capture, type Report } from "./report";
 import type { AutofixMode, Review, Settings } from "./settings";
 
@@ -66,7 +66,12 @@ type Opened = { session: AgentSession; followUp: boolean };
 type OpenOptions = { write?: boolean; captureDir?: string };
 
 export const SHRIKEN = "shriken";
-const RESERVED: Record<string, string> = { [SHRIKEN]: "shriken runs after the reviews, not as one", [CAPTURE]: "capture runs after the reviews, not as one", [AUTOFIX]: "autofix runs after the reviews, not as one" };
+const RESERVED: Record<string, string> = {
+  [SHRIKEN]: "shriken runs after the reviews, not as one",
+  [CAPTURE]: "capture runs after the reviews, not as one",
+  [AUTOFIX]: "autofix runs after the reviews, not as one",
+  [ASK]: "ask is what a comment asks for, not a review",
+};
 const OWN = new Set([SHRIKEN, CAPTURE, AUTOFIX]);
 const PROMPT_KEEP = 20_000;
 const RANK: Record<Report["verdict"], number> = { pass: 0, warn: 1, fail: 2 };
@@ -119,9 +124,12 @@ export async function runJob(job: Job, deps: RunDeps): Promise<ReviewRun[]> {
   const pr = await deps.gh.load(job);
   await ensureCheckout({ dir: deps.cwd, cloneUrl: pr.cloneUrl, pr: pr.number, headSha: pr.headSha, token: deps.token }, deps.log);
   const model = deps.settings.model ?? deps.backend.defaultModel;
-  const reviews = new Map((job.reviews.length ? job.reviews : deps.settings.reviews).map((name) => [name, deps.reviews.find((review) => review.name === name)]));
+  const asked = job.prompt !== undefined && (!job.reviews.length || job.reviews.some((name) => !deps.reviews.some((review) => review.name === name)));
+  const reviews = asked
+    ? new Map([[ASK, askReview(job.prompt!)]])
+    : new Map((job.reviews.length ? job.reviews : deps.settings.reviews).map((name) => [name, deps.reviews.find((review) => review.name === name)]));
   const runs: ReviewRun[] = [...reviews].map(([review, loaded]) => {
-    const error = RESERVED[review] ?? (loaded ? undefined : "unknown review");
+    const error = asked ? undefined : RESERVED[review] ?? (loaded ? undefined : "unknown review");
     return { review, backend: deps.backend.name, model, status: error ? "error" : "queued", ...(error ? { error } : {}) };
   });
   const status = await deps.gh.stickyComment(pr, STATUS_MARKER, renderStatus(runs));

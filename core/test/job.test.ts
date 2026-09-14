@@ -7,22 +7,29 @@ const installation = { id: 77 };
 describe("parseTrigger", () => {
   test("returns null when the bot is not mentioned", () => {
     expect(parseTrigger("looks good to me")).toBeNull();
-    expect(parseTrigger("email me at shrike@example.com")).toBeNull();
-    expect(parseTrigger("@shrikey run")).toBeNull();
+    expect(parseTrigger("shrike@example.com is the address")).toBeNull();
+    expect(parseTrigger("shrikey run")).toBeNull();
+    expect(parseTrigger("hey shrike, take a look")).toBeNull();
+    expect(parseTrigger("@shrike")).toBeNull();
     expect(parseTrigger(null)).toBeNull();
   });
 
   test("bare mention means the configured reviews", () => {
-    expect(parseTrigger("@shrike")).toEqual([]);
-    expect(parseTrigger("hey @shrike, take a look")).toEqual([]);
-    expect(parseTrigger("@shrike.")).toEqual([]);
+    expect(parseTrigger("shrike")).toEqual({ words: [], text: "" });
+    expect(parseTrigger("  Shrike. ")).toEqual({ words: [], text: "" });
+    expect(parseTrigger("shrike!\n")).toEqual({ words: [], text: "" });
   });
 
   test("named reviews are ordered and lowercased", () => {
-    expect(parseTrigger("@shrike security-review")).toEqual(["security-review"]);
-    expect(parseTrigger("@Shrike Code-Review, slop-review")).toEqual(["code-review", "slop-review"]);
-    expect(parseTrigger("@shrike cleanup please")).toEqual(["cleanup", "please"]);
-    expect(parseTrigger("@shrike cleanup\nthanks")).toEqual(["cleanup"]);
+    expect(parseTrigger("shrike security-review")).toEqual({ words: ["security-review"], text: "security-review" });
+    expect(parseTrigger("Shrike: Code-Review, slop-review")).toEqual({ words: ["code-review", "slop-review"], text: "Code-Review, slop-review" });
+    expect(parseTrigger("shrike cleanup please")).toEqual({ words: ["cleanup", "please"], text: "cleanup please" });
+    expect(parseTrigger("shrike cleanup\nthanks")).toEqual({ words: ["cleanup", "thanks"], text: "cleanup\nthanks" });
+  });
+
+  test("anything that is not a list of names is kept as the prompt, with no words", () => {
+    expect(parseTrigger("shrike, is the retry loop in api.ts safe?")).toEqual({ words: [], text: "is the retry loop in api.ts safe?" });
+    expect(parseTrigger("shrike\ncheck `store.ts`\nand the tests")).toEqual({ words: [], text: "check `store.ts`\nand the tests" });
   });
 });
 
@@ -48,32 +55,36 @@ describe("jobFromEvent", () => {
   });
 
   test("issue comments trigger only on pull requests that mention the bot", () => {
-    const comment = { body: "@shrike slop-review", author_association: "COLLABORATOR" };
+    const comment = { body: "shrike slop-review", author_association: "COLLABORATOR" };
     expect(jobFromEvent("issue_comment", { action: "created", repository, issue: { number: 4, pull_request: {} }, comment })).toMatchObject({ pr: 4, trigger: "comment", reviews: ["slop-review"] });
     expect(jobFromEvent("issue_comment", { action: "created", repository, issue: { number: 4 }, comment })).toBeNull();
     expect(jobFromEvent("issue_comment", { action: "edited", repository, issue: { number: 4, pull_request: {} }, comment })).toBeNull();
     expect(jobFromEvent("issue_comment", { action: "created", repository, issue: { number: 4, pull_request: {} }, comment: { body: "nice" } })).toBeNull();
-    expect(jobFromEvent("issue_comment", { action: "created", repository, issue: { number: 4, pull_request: {} }, comment: { body: "@shrike", author_association: "NONE" } })).toBeNull();
-    expect(jobFromEvent("issue_comment", { action: "created", repository, issue: { number: 4, pull_request: {} }, comment: { body: "@shrike" } })).toBeNull();
+    expect(jobFromEvent("issue_comment", { action: "created", repository, issue: { number: 4, pull_request: {} }, comment: { body: "shrike", author_association: "NONE" } })).toBeNull();
+    expect(jobFromEvent("issue_comment", { action: "created", repository, issue: { number: 4, pull_request: {} }, comment: { body: "shrike" } })).toBeNull();
   });
 
   test("autofix comments carry the mode and leave the reviews to the settings", () => {
     const at = (body: string) => jobFromEvent("issue_comment", { action: "created", repository, issue: { number: 4, pull_request: {} }, comment: { body, author_association: "OWNER" } });
-    expect(at("@shrike autofix")).toEqual({ owner: "forloopcodes", repo: "shrike", repositoryId: 501, installationId: undefined, pr: 4, trigger: "comment", reviews: [], autofix: "all" });
-    expect(at("@shrike autofix ci")).toMatchObject({ reviews: [], autofix: "ci" });
-    expect(at("@shrike Autofix CI")).toMatchObject({ reviews: [], autofix: "ci" });
-    expect(at("@shrike autofix all")).toMatchObject({ reviews: ["all"], autofix: "all" });
-    expect(at("@shrike autofix ci slop-review")).toMatchObject({ reviews: ["slop-review"], autofix: "ci" });
-    expect(at("@shrike slop-review")).not.toHaveProperty("autofix");
-    expect(at("@shrike ci")).toMatchObject({ reviews: ["ci"] });
-    expect(at("@shrike ci")).not.toHaveProperty("autofix");
-    expect(jobFromEvent("issue_comment", { action: "created", repository, issue: { number: 4, pull_request: {} }, comment: { body: "@shrike autofix", author_association: "NONE" } })).toBeNull();
+    expect(at("shrike autofix")).toEqual({ owner: "forloopcodes", repo: "shrike", repositoryId: 501, installationId: undefined, pr: 4, trigger: "comment", reviews: [], autofix: "all" });
+    expect(at("shrike autofix ci")).toMatchObject({ reviews: [], autofix: "ci" });
+    expect(at("shrike Autofix CI")).toMatchObject({ reviews: [], autofix: "ci" });
+    expect(at("shrike autofix all")).toMatchObject({ reviews: ["all"], autofix: "all" });
+    expect(at("shrike autofix ci slop-review")).toMatchObject({ reviews: ["slop-review"], autofix: "ci" });
+    expect(at("shrike slop-review")).not.toHaveProperty("autofix");
+    expect(at("shrike ci")).toMatchObject({ reviews: ["ci"] });
+    expect(at("shrike ci")).not.toHaveProperty("autofix");
+    expect(at("shrike ci")).toMatchObject({ prompt: "ci" });
+    expect(at("shrike autofix")).not.toHaveProperty("prompt");
+    expect(at("shrike")).not.toHaveProperty("prompt");
+    expect(at("shrike, is the retry loop safe?")).toEqual({ owner: "forloopcodes", repo: "shrike", repositoryId: 501, installationId: undefined, pr: 4, trigger: "comment", reviews: [], prompt: "is the retry loop safe?" });
+    expect(jobFromEvent("issue_comment", { action: "created", repository, issue: { number: 4, pull_request: {} }, comment: { body: "shrike autofix", author_association: "NONE" } })).toBeNull();
     expect(jobFromEvent("repository_dispatch", { repository, client_payload: { pr: 3, trigger: "comment", reviews: [], autofix: "ci" } })).toMatchObject({ autofix: "ci" });
     expect(() => jobFromEvent("repository_dispatch", { repository, client_payload: { pr: 3, trigger: "comment", reviews: [], autofix: "always" } })).toThrow();
   });
 
   test("review comments use the pull request number", () => {
-    expect(jobFromEvent("pull_request_review_comment", { action: "created", repository, pull_request: { number: 9 }, comment: { body: "@shrike", author_association: "OWNER" } })).toMatchObject({ pr: 9, reviews: [] });
+    expect(jobFromEvent("pull_request_review_comment", { action: "created", repository, pull_request: { number: 9 }, comment: { body: "shrike", author_association: "OWNER" } })).toMatchObject({ pr: 9, reviews: [] });
   });
 
   test("repository_dispatch carries the job in client_payload and trusts the repository", () => {

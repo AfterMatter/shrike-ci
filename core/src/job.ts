@@ -1,5 +1,5 @@
 // Job model shared by webhook, action and runner. Maps GitHub events and
-// @shrike comments to ordered review lists and a one off autofix mode.
+// comments starting with shrike to reviews, a prompt or a one off autofix.
 import { z } from "zod";
 
 export const jobSchema = z.object({
@@ -10,15 +10,22 @@ export const jobSchema = z.object({
   trigger: z.enum(["pull_request", "comment", "dispatch"]),
   reviews: z.array(z.string().regex(/^[a-z0-9-]+$/)).default([]),
   autofix: z.enum(["ci", "all"]).optional(),
+  prompt: z.string().min(1).optional(),
   installationId: z.number().int().optional(),
 });
 
 export type Job = z.infer<typeof jobSchema>;
 
-export function parseTrigger(body: string | null | undefined): string[] | null {
-  const match = /(^|\s)@shrike(?:[ \t]+([a-z0-9-]+(?:[ \t,]+[a-z0-9-]+)*))?(?=[\s.,!?;:]|$)/i.exec(body ?? "");
+export interface Trigger {
+  words: string[];
+  text: string;
+}
+
+export function parseTrigger(body: string | null | undefined): Trigger | null {
+  const match = /^\s*shrike(?![\w@-])[ \t]*[.,!?;:]*\s*([\s\S]*?)\s*$/i.exec(body ?? "");
   if (!match) return null;
-  return match[2]?.split(/[\s,]+/).filter(Boolean).map((s) => s.toLowerCase()) ?? [];
+  const text = match[1]!;
+  return { words: /^[a-z0-9-]+(?:[\s,]+[a-z0-9-]+)*$/i.test(text) ? text.split(/[\s,]+/).map((s) => s.toLowerCase()) : [], text };
 }
 
 const eventSchema = z.object({
@@ -43,10 +50,11 @@ export function jobFromEvent(name: string, payload: unknown): Job | null {
   }
   if ((name === "issue_comment" || name === "pull_request_review_comment") && event.action === "created") {
     const pr = name === "issue_comment" ? (event.issue?.pull_request ? event.issue.number : undefined) : event.pull_request?.number;
-    const words = parseTrigger(event.comment?.body);
-    if (pr === undefined || words === null || !TRUSTED.has(event.comment?.author_association ?? "")) return null;
+    const trigger = parseTrigger(event.comment?.body);
+    if (pr === undefined || trigger === null || !TRUSTED.has(event.comment?.author_association ?? "")) return null;
+    const { words, text } = trigger;
     const autofix = words[0] === "autofix" ? (words[1] === "ci" ? "ci" : "all") : undefined;
-    return { ...repo, pr, trigger: "comment", reviews: autofix ? words.slice(words[1] === "ci" ? 2 : 1) : words, ...(autofix ? { autofix } : {}) };
+    return { ...repo, pr, trigger: "comment", reviews: autofix ? words.slice(words[1] === "ci" ? 2 : 1) : words, ...(autofix ? { autofix } : text ? { prompt: text } : {}) };
   }
   return null;
 }

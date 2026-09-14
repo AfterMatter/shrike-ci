@@ -11,6 +11,14 @@ const DIFF_LIMIT = 150_000;
 export const RETRY_PROMPT =
   "Your last message did not contain a valid report. Reply with only one ```json fenced block matching the output contract, and nothing else.";
 
+export const ASK = "ask";
+
+export const askReview = (prompt: string): Review => ({
+  name: ASK,
+  description: "What a pull request comment asked for",
+  body: `A maintainer asked in a pull request comment:\n\n${prompt}\n\nDo what the comment asks. Put the answer in the summary and report only the findings the comment calls for.`,
+});
+
 export const SHRIKEN_RETRY_PROMPT =
   "Your last message did not contain a valid summary. Reply with the two or three paragraphs inside one ```markdown fenced block, a reference token such as [review:<name>] or [finding:<review>#<n>] on every claim, then one ```json fenced block {\"scores\": {\"<review>\": <0 to 100>}} with an integer for every review, and nothing after it.";
 

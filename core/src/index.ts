@@ -9,6 +9,7 @@ export type { Job } from "./job";
 export { parseReport, parseShriken, parseShrikenScores, reportSchema, shrikenReferences } from "./report";
 export type { Capture, Report, Finding, ShrikenReference } from "./report";
 export { runJob, renderStatus, runRecord, SHRIKEN } from "./runner";
+export { ASK } from "./prompt";
 export type { RunDeps, ReviewRun, RunRecord, Turn } from "./runner";
 export { AUTOFIX, TRAILER } from "./autofix";
 export type { AutofixDeps } from "./autofix";

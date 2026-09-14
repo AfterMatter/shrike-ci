@@ -187,6 +187,39 @@ describe("runJob", () => {
     ]);
   });
 
+  test("a comment prompt runs one ask review with the comment's words, unless every word names a review", async () => {
+    const { dir, sha } = await repoAtHead();
+    const pr = prAt(dir, sha);
+    const asked = fakes({ ask: [report("pass")] }, pr);
+    const runs = await runJob(
+      { owner: "o", repo: "r", pr: 1, trigger: "comment", reviews: [], prompt: "is the retry loop in api.ts safe?" },
+      { gh: asked.gh, backend: asked.backend, settings: settings({ shriken: false }), reviews, cwd: dir, log: () => {} },
+    );
+    expect(runs.map((r) => [r.review, r.status])).toEqual([["ask", "done"]]);
+    expect(asked.trace.sessions[0]!.prompts[0]).toContain('running the "ask" review');
+    expect(asked.trace.sessions[0]!.prompts[0]).toContain("A maintainer asked in a pull request comment:\n\nis the retry loop in api.ts safe?");
+    expect(asked.trace.checks.map((c) => [c.review, c.conclusion])).toEqual([["ask", "success"]]);
+
+    const unknown = fakes({ ask: [report("warn")] }, pr);
+    const mixed = await runJob(
+      { owner: "o", repo: "r", pr: 1, trigger: "comment", reviews: ["cleanup", "please"], prompt: "cleanup please" },
+      { gh: unknown.gh, backend: unknown.backend, settings: settings({ shriken: false }), reviews, cwd: dir, log: () => {} },
+    );
+    expect(mixed.map((r) => [r.review, r.status])).toEqual([["ask", "done"]]);
+
+    const named = fakes({ cleanup: [report("pass")] }, pr);
+    const plain = await runJob(
+      { owner: "o", repo: "r", pr: 1, trigger: "comment", reviews: ["cleanup"], prompt: "cleanup" },
+      { gh: named.gh, backend: named.backend, settings: settings({ shriken: false }), reviews, cwd: dir, log: () => {} },
+    );
+    expect(plain.map((r) => [r.review, r.status])).toEqual([["cleanup", "done"]]);
+    expect(named.trace.sessions[0]!.prompts[0]).not.toContain("A maintainer asked");
+
+    const reserved = fakes({}, pr);
+    const refused = await runJob({ owner: "o", repo: "r", pr: 1, trigger: "comment", reviews: ["ask"] }, { gh: reserved.gh, backend: reserved.backend, settings: settings({ shriken: false }), reviews, cwd: dir, log: () => {} });
+    expect(refused.map((r) => [r.review, r.status, r.error])).toEqual([["ask", "error", "ask is what a comment asks for, not a review"]]);
+  });
+
   test("retries once on invalid output, isolates failures, honours requested reviews, model and shriken off", async () => {
     const { dir, sha } = await repoAtHead();
     const pr = prAt(dir, sha);
