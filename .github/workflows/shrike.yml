@@ -17,12 +17,9 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      pull-requests: write
-      checks: write
-      issues: write
       id-token: write
     steps:
       - uses: actions/checkout@v4
-      - uses: ./action
+      - uses: AfterMatter/shrike-ci/action@main
         with:
-          api_url: ${{ vars.SHRIKE_API_URL }}
+          api_url: https://shriken.vercel.app
