@@ -1,5 +1,3 @@
-// Prints a greeting for the name given on the command line and appends
-// it to greetings.log, then reports how many greetings the log holds.
 const fs = require("node:fs");
 
 const LOG = "greetings.log";
