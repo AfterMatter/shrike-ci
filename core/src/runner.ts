@@ -210,10 +210,6 @@ export async function runJob(job: Job, deps: RunDeps): Promise<ReviewRun[]> {
     await deps.onRun?.(run, pr).catch((error) => deps.log(`[${run.review}] could not report the run: ${error instanceof Error ? error.message : String(error)}`));
   };
   const judged: Judgement[][] = [];
-  const owned = (thread: Thread, review: string) => {
-    const owner = thread.skills.find((skill) => reviews.has(skill));
-    return owner === undefined || owner === review;
-  };
   const review = (run: ReviewRun, loaded: Review) =>
     step(run, async (opened, check) => {
       if (loaded.paths?.length && !pr.files.some((file) => loaded.paths!.some((glob) => globMatches(glob, file.path)))) {
@@ -221,7 +217,7 @@ export async function runJob(job: Job, deps: RunDeps): Promise<ReviewRun[]> {
         return check.finish("success", "skipped: no matching files", run.report.summary);
       }
       const { session, followUp } = await opened();
-      const mine = run.review === ASK ? [] : open.filter((thread) => owned(thread, run.review));
+      const mine = run.review === ASK ? [] : open;
       const first = await ask(run, session, buildPrompt(loaded, pr, { threads: mine, wontFix, previous, followUp }), RETRY_PROMPT, parseReport, deps.log);
       run.report = first.findings.length ? await ask(run, session, VERIFY_PROMPT, RETRY_PROMPT, parseReport, deps.log) : first;
       if (mine.length) judged.push(run.report.threads ?? first.threads ?? []);
