@@ -39,6 +39,15 @@ describe("parseReport", () => {
     expect(() => parse({ related: Array.from({ length: 21 }, (_, n) => ({ path: "b.ts", line: n + 1 })) })).toThrow();
   });
 
+  test("reads a lone backslash the model copied from a regex as a literal one, and leaves valid escapes alone", () => {
+    const text = '```json\n{"summary":"counts /^\\s*```/ and C:\\\\dir\\n","verdict":"pass","findings":[{"path":"a.ts","line":1,"severity":"info","title":"t","body":"use \\d+ \\"here\\" \\u00e9","suggestion":"x.replace(/\\./g, \\"\\")"}]}\n```';
+    expect(() => JSON.parse(text.slice(8, -4))).toThrow();
+    const report = parseReport(text);
+    expect(report.summary).toBe("counts /^\\s*```/ and C:\\dir\n");
+    expect(report.findings[0]!.body).toBe('use \\d+ "here" é');
+    expect(report.findings[0]!.suggestion).toBe('x.replace(/\\./g, "")');
+  });
+
   test("keeps optional range and suggestion", () => {
     const finding = { path: "a.ts", line: 5, startLine: 3, severity: "warning" as const, title: "t", body: "b", suggestion: "x" };
     expect(parseReport(`\`\`\`json\n${JSON.stringify({ ...valid, findings: [finding] })}\n\`\`\``).findings[0]).toEqual(finding);

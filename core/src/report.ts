@@ -71,7 +71,7 @@ export function parseJson<T>(text: string, schema: z.ZodType<T>, what = "report"
   let lastError = "no JSON block found";
   for (const candidate of candidates) {
     try {
-      return schema.parse(withoutNulls(JSON.parse(candidate)));
+      return schema.parse(withoutNulls(JSON.parse(candidate.replace(/\\(["\\/bfnrtu])|\\/g, (escape, valid: string | undefined) => (valid ? escape : "\\\\")))));
     } catch (error) {
       lastError = error instanceof Error ? error.message : String(error);
     }
