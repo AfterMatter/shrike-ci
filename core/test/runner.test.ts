@@ -246,6 +246,7 @@ describe("runJob", () => {
     expect(asked.trace.sessions[0]!.prompts[0]).toContain('running the "ask" review');
     expect(asked.trace.sessions[0]!.prompts[0]).toContain("A maintainer asked in a pull request comment:\n\nis the retry loop in api.ts safe?");
     expect(asked.trace.checks.map((c) => [c.review, c.conclusion])).toEqual([["ask", "success"]]);
+    expect(asked.trace.statuses.at(-1)).toContain("<details open><summary>ask said</summary>\n\npass summary\n\n</details>");
 
     const unknown = fakes({ ask: [report("warn"), report("warn")] }, pr);
     const mixed = await runJob(
@@ -286,6 +287,7 @@ describe("runJob", () => {
     expect(trace.closed).toEqual([]);
     expect(trace.statuses.at(-1)).toContain("### Open (1)\n- **[warning] warn finding** `f.txt:1` · slop-review [thread](https://gh/t/1)");
     expect(trace.statuses.at(-1)).not.toContain("`new`");
+    expect(trace.statuses.at(-1)).toContain("<details><summary>ask said</summary>\n\nBecause the header counts.\n\n</details>");
   });
 
   test("retries once on invalid output, isolates failures, honours requested reviews, model and shriken off", async () => {
@@ -351,6 +353,29 @@ describe("runJob", () => {
     expect(last).toContain("<details><summary>Nits (1)</summary>\n\n- `f.txt:2` **Trailing space** · code-review, security-review: Here.\n\n</details>");
     expect(last).toContain("<!-- shrike:decision -->\n1 problem open, 1 new in this push.");
     expect(runs.every((r) => r.posted?.url === "https://r/review")).toBe(true);
+  });
+
+  test("a finding with related places posts one thread at its own line linking the others, and a prose only review lands on the card", async () => {
+    const { dir, sha } = await repoAtHead();
+    await writeFile(join(dir, "f.txt"), `${LINE}\nsecond\n`);
+    const pr = prAt(dir, sha);
+    const related = [{ path: "g.ts", line: 6, startLine: 4, suggestion: "guard();" }, { path: "f.txt", line: 2 }];
+    const grouped = report("fail", [{ path: "f.txt", line: 1, severity: "error", title: "Leak", body: "b", suggestion: "fixed", related }]);
+    const prose = report("pass", [], { summary: "This change belongs, it closes the linked issue." });
+    const { trace, backend, gh } = fakes({ "code-review": [grouped, grouped], "intent-review": [prose] }, pr);
+    const runs = await runJob({ owner: "o", repo: "r", pr: 1, trigger: "comment", reviews: ["code-review", "intent-review"] }, { gh, backend, settings: settings({ shriken: false }), reviews, cwd: dir, log: () => {} });
+    expect(runs[0]!.report!.findings[0]!.related).toEqual(related);
+    expect(trace.reviews).toHaveLength(1);
+    expect(trace.reviews[0]!.map((own) => [own.path, own.line])).toEqual([["f.txt", 1]]);
+    const body = trace.reviews[0]![0]!.body;
+    expect(body).toBe(`<!-- shrike:finding ${fingerprintOf("f.txt", LINE)} -->\n**[error] Leak** · code-review\n\nb\n\n\`\`\`suggestion\nfixed\n\`\`\`\n\nAlso at [\`g.ts:4-6\`](${dir}/blob/${sha}/g.ts#L4-L6)\n\n\`\`\`\nguard();\n\`\`\`\n\nAlso at [\`f.txt:2\`](${dir}/blob/${sha}/f.txt#L2)`);
+    expect(body.match(/```suggestion/g)).toHaveLength(1);
+    const last = trace.statuses.at(-1)!;
+    expect(last).toContain("### Open (1)\n- `new` **[error] Leak** `f.txt:1` · code-review [thread](https://r/review)");
+    expect(last).toContain("<details><summary>intent-review said</summary>\n\nThis change belongs, it closes the linked issue.\n\n</details>");
+    expect(last).toContain("<details><summary>code-review said</summary>\n\nfail summary\n\n</details>");
+    expect(last).not.toContain("<details open>");
+    expect(runs[1]!.posted).toBeUndefined();
   });
 
   test("a finding that matches an open thread is not posted again even after a line shift, so a push with nothing new creates no review", async () => {

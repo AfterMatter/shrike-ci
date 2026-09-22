@@ -1,5 +1,6 @@
 // The one Shrike card on a pull request: verdict, decision, the table of
-// skills, open and resolved findings, folded nits and captures, the site link.
+// skills, open and resolved findings, folded notes, nits, captures, the link.
+import { ASK } from "./prompt";
 import type { Finding, Report } from "./report";
 import type { ReviewRun } from "./runner";
 
@@ -35,6 +36,7 @@ export const DECISION_MARKER = "<!-- shrike:decision -->";
 export const VERDICT_LABEL: Record<Report["verdict"], string> = { pass: "pass", warn: "warnings", fail: "changes needed" };
 const OWN = new Set(["shriken", "capture", "autofix"]);
 const RANK: Record<Report["verdict"], number> = { pass: 0, warn: 1, fail: 2 };
+const NOTE_LIMIT = 3000;
 
 export const patchIn = (body: string | null): { id: string; sha: string } | null => {
   const found = new RegExp(`${PATCH_MARKER} ([0-9a-f]+) ([0-9a-f]+) -->`).exec(body ?? "");
@@ -85,7 +87,14 @@ export function renderCard(runs: ReviewRun[], card: Card = {}): string {
   const sections = [
     open.length ? `### Open (${open.length})\n${open.map((item) => `- ${item.fresh ? "`new` " : ""}**[${item.severity}] ${item.title}** ${at(item.path, item.line)} · ${item.skills.join(", ")}${link(item.url, "thread")}`).join("\n")}` : "",
     card.resolved?.length ? `### Resolved since last push (${card.resolved.length})\n${card.resolved.map((item) => `- ~~${item.title}~~ \`${item.path}\`${link(item.url, "thread")}`).join("\n")}` : "",
-    card.nits?.length ? `<details><summary>Nits (${card.nits.length})</summary>\n\n${card.nits.map(({ finding, skills }) => `- ${at(finding.path, finding.line)} **${finding.title}** · ${skills.join(", ")}: ${finding.body.split("\n", 1)[0]}`).join("\n")}\n\n</details>` : "",
+    ...runs.flatMap((run) => {
+      const summary = run.status === "done" && !OWN.has(run.review) ? run.report?.summary.trim() : undefined;
+      if (!summary) return [];
+      const head = summary.slice(0, NOTE_LIMIT);
+      const note = head === summary ? summary : `${head}${(head.match(/```/g)?.length ?? 0) % 2 ? "\n```" : ""}\n\n(cut here, the check has the full text)`;
+      return [`<details${run.review === ASK && !run.posted ? " open" : ""}><summary>${run.review} said</summary>\n\n${note}\n\n</details>`];
+    }),
+    card.nits?.length ? `<details><summary>Nits (${card.nits.length})</summary>\n\n${card.nits.map(({ finding, skills }) => `- ${at(finding.path, finding.line)}${finding.related?.length ? ` and ${count(finding.related.length, "other place")}` : ""} **${finding.title}** · ${skills.join(", ")}: ${finding.body.split("\n", 1)[0]}`).join("\n")}\n\n</details>` : "",
     card.capture ? `<details><summary>Before and after</summary>\n\n${card.capture}\n\n</details>` : "",
     card.site ? `[Open on Shrike](${card.site})` : "",
   ].filter(Boolean);

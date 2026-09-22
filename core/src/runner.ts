@@ -235,7 +235,7 @@ export async function runJob(job: Job, deps: RunDeps): Promise<ReviewRun[]> {
     const { inline, outside } = splitFlagged(flagged.filter((own) => own.finding.severity !== "info" && !known.has(own.fingerprint)), pr.files);
     let posted: ReviewRun["posted"];
     if (inline.length) {
-      posted = await deps.gh.postReview(pr, inline.map(({ finding, ...own }) => ({ path: finding.path, line: finding.line, startLine: finding.startLine, body: renderThread({ ...own, finding }) })));
+      posted = await deps.gh.postReview(pr, inline.map(({ finding, ...own }) => ({ path: finding.path, line: finding.line, startLine: finding.startLine, body: renderThread({ ...own, finding }, `${pr.cloneUrl.replace(/\.git$/, "")}/blob/${pr.headSha}`) })));
       for (const run of runs) if (inline.some((own) => own.skills.includes(run.review))) run.posted = posted;
       deps.log(`posted ${inline.length} new thread(s)`);
     }

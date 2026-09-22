@@ -48,6 +48,30 @@ describe("renderCard", () => {
     expect(renderCard([run("a", { report: { summary: "s", verdict: "pass", findings: [] } })], { open: [] })).toContain("<!-- shrike:decision -->\nNothing blocks the merge.");
   });
 
+  test("folds what each finished review wrote, skips its own steps and unfinished reviews, and cuts a long answer without leaving a fence open", () => {
+    const long = `Intro.\n\n\`\`\`ts\n${"x".repeat(3100)}\n\`\`\`\n\nEnd.`;
+    const body = renderCard([
+      run("intent-review", { report: { summary: "  It belongs.\n\n**Keep** it.  ", verdict: "pass", findings: [] } }),
+      run("code-review", { status: "running" }),
+      run("slop-review", { status: "error", error: "boom", report: { summary: "partial", verdict: "pass", findings: [] } }),
+      run("shriken", { report: { summary: "the paragraphs", verdict: "pass", findings: [] } }),
+      run("autofix", { report: { summary: "Pushed abc", verdict: "pass", findings: [] } }),
+      run("explain", { report: { summary: long, verdict: "pass", findings: [] } }),
+    ]);
+    expect(body).toContain("<details><summary>intent-review said</summary>\n\nIt belongs.\n\n**Keep** it.\n\n</details>");
+    expect(body).not.toMatch(/(code-review|slop-review|shriken|autofix) said/);
+    const cut = body.slice(body.indexOf("<details><summary>explain said</summary>"));
+    expect(cut).toContain(`\`\`\`ts\n${"x".repeat(3000 - 14)}\n\`\`\`\n\n(cut here, the check has the full text)\n\n</details>`);
+    expect(cut).not.toContain("End.");
+    expect(body.match(/```/g)!.length % 2).toBe(0);
+  });
+
+  test("a nit spread over several places says how many more", () => {
+    const nit = { path: "src/c.ts", line: 8, severity: "info" as const, title: "Same typo", body: "Typo.", related: [{ path: "src/d.ts", line: 1 }, { path: "src/e.ts", line: 2 }] };
+    expect(renderCard([], { nits: [{ finding: nit, skills: ["slop-review"] }] })).toContain("- `src/c.ts:8` and 2 other places **Same typo** · slop-review: Typo.");
+    expect(renderCard([], { nits: [{ finding: { ...nit, related: [nit.related[0]!] }, skills: ["slop-review"] }] })).toContain("- `src/c.ts:8` and 1 other place **Same typo**");
+  });
+
   test("the verdict line is the worst review verdict, incomplete when every review failed, and ignores Shriken, capture and autofix", () => {
     expect(verdictLine([warned, run("b", { report: { summary: "s", verdict: "fail", findings: [] } }), run("shriken", { report: { summary: "s", verdict: "fail", findings: [] } })])).toBe("changes needed");
     expect(verdictLine([run("a", { report: { summary: "s", verdict: "pass", findings: [] } }), run("capture", { report: { summary: "s", verdict: "fail", findings: [] } })])).toBe("pass");

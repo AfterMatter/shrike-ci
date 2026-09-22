@@ -5,6 +5,7 @@ import { join } from "node:path";
 import type { Finding } from "../src/report";
 import { closedByShrike, fingerprintIn, fingerprintOf, flag, headOf, isHumanReply, judge, lineReader, renderThread, replyBody } from "../src/threads";
 
+const BLOB = "https://github.com/o/r/blob/abc";
 const finding = (extra: Partial<Finding>): Finding => ({ path: "src/a.ts", line: 3, severity: "warning", title: "Wrong count", body: "Counts the header.", ...extra });
 
 describe("fingerprints", () => {
@@ -17,15 +18,24 @@ describe("fingerprints", () => {
   });
 
   test("are read back from a thread body and only from a thread body", () => {
-    const body = renderThread({ fingerprint: "0123456789abcdef", skills: ["code-review"], finding: finding({}) });
+    const body = renderThread({ fingerprint: "0123456789abcdef", skills: ["code-review"], finding: finding({}) }, BLOB);
     expect(body).toStartWith("<!-- shrike:finding 0123456789abcdef -->\n**[warning] Wrong count** · code-review\n\nCounts the header.");
     expect(fingerprintIn(body)).toBe("0123456789abcdef");
     expect(fingerprintIn("**[warning] Wrong count**")).toBeNull();
     expect(fingerprintIn("<!-- shrike:finding nope -->")).toBeNull();
     expect(headOf(body)).toEqual({ severity: "warning", title: "Wrong count", skills: ["code-review"] });
-    expect(headOf(renderThread({ fingerprint: "0123456789abcdef", skills: ["a", "b"], finding: finding({ severity: "error", suggestion: "x" }) }))).toEqual({ severity: "error", title: "Wrong count", skills: ["a", "b"] });
+    expect(headOf(renderThread({ fingerprint: "0123456789abcdef", skills: ["a", "b"], finding: finding({ severity: "error", suggestion: "x" }) }, BLOB))).toEqual({ severity: "error", title: "Wrong count", skills: ["a", "b"] });
     expect(headOf("anything")).toEqual({ severity: "warning", title: "finding", skills: [] });
-    expect(renderThread({ fingerprint: "0123456789abcdef", skills: ["a"], finding: finding({ suggestion: "const x = 1;" }) })).toEndWith("```suggestion\nconst x = 1;\n```");
+    expect(renderThread({ fingerprint: "0123456789abcdef", skills: ["a"], finding: finding({ suggestion: "const x = 1;" }) }, BLOB)).toEndWith("```suggestion\nconst x = 1;\n```");
+    expect(renderThread({ fingerprint: "0123456789abcdef", skills: ["a"], finding: finding({}) }, BLOB)).not.toContain("Also at");
+  });
+
+  test("a finding with related places keeps one suggestion for its own lines and links every other place at the head commit", () => {
+    const body = renderThread({ fingerprint: "0123456789abcdef", skills: ["security-review"], finding: finding({ suggestion: "own();", related: [{ path: "src/b.ts", line: 9, startLine: 7, suggestion: "check();" }, { path: "lib/c.ts", line: 2 }] }) }, BLOB);
+    expect(body).toBe(`<!-- shrike:finding 0123456789abcdef -->\n**[warning] Wrong count** · security-review\n\nCounts the header.\n\n\`\`\`suggestion\nown();\n\`\`\`\n\nAlso at [\`src/b.ts:7-9\`](${BLOB}/src/b.ts#L7-L9)\n\n\`\`\`\ncheck();\n\`\`\`\n\nAlso at [\`lib/c.ts:2\`](${BLOB}/lib/c.ts#L2)`);
+    expect(body.match(/```suggestion/g)).toHaveLength(1);
+    expect(fingerprintIn(body)).toBe("0123456789abcdef");
+    expect(headOf(body)).toEqual({ severity: "warning", title: "Wrong count", skills: ["security-review"] });
   });
 
   test("replies tell Shrike's own answers from a human's, and a closing reply marks a thread Shrike closed", () => {

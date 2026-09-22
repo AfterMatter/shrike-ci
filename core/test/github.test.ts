@@ -70,7 +70,7 @@ describe("rendering", () => {
   });
 
   test("a thread node becomes a thread only when its first comment carries a fingerprint", () => {
-    const first = { id: "C1", databaseId: 11, body: renderThread(flagged({ severity: "error" }, ["code-review", "cleanup"])), url: "https://gh/c/11", author: { login: "shrike[bot]" } };
+    const first = { id: "C1", databaseId: 11, body: renderThread(flagged({ severity: "error" }, ["code-review", "cleanup"]), "b"), url: "https://gh/c/11", author: { login: "shrike[bot]" } };
     const node = { id: "T1", isResolved: false, path: "a.ts", line: 3, comments: { nodes: [first, { id: "C2", databaseId: 12, body: "not really", url: "u", author: { login: "bob" } }, { id: "C3", databaseId: 13, body: replyBody("Here is why."), url: "u", author: null }] } };
     expect(threadOf(node)).toEqual({ id: "T1", fingerprint: "0123456789abcdef", path: "a.ts", line: 3, title: "t", severity: "error", skills: ["code-review", "cleanup"], resolved: false, closedByShrike: false, commentId: 11, commentNodeId: "C1", url: "https://gh/c/11", replies: [{ id: 12, author: "bob", body: "not really" }] });
     expect(threadOf({ ...node, isResolved: true, comments: { nodes: [first, { id: "C4", databaseId: 14, body: replyBody("Fixed in abc1234.", true), url: "u", author: null }] } })).toMatchObject({ resolved: true, closedByShrike: true, replies: [] });
@@ -185,7 +185,7 @@ describe("PullRequestClient", () => {
       graphql: async (query: string, variables: Record<string, unknown>) => {
         queries.push({ query, variables });
         const second = variables.after === "cursor";
-        return { repository: { pullRequest: { reviewThreads: { pageInfo: { hasNextPage: !second, endCursor: second ? null : "cursor" }, nodes: second ? [node("T3", "plain human thread")] : [node("T1", renderThread(flagged({}))), node("T2", renderThread(flagged({ title: "z" })), true)] } } } };
+        return { repository: { pullRequest: { reviewThreads: { pageInfo: { hasNextPage: !second, endCursor: second ? null : "cursor" }, nodes: second ? [node("T3", "plain human thread")] : [node("T1", renderThread(flagged({}), "b")), node("T2", renderThread(flagged({ title: "z" }), "b"), true)] } } } };
       },
     }) as unknown as Octokit;
     const client = new PullRequestClient(octokit);

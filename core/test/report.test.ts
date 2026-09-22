@@ -27,6 +27,17 @@ describe("parseReport", () => {
     expect(() => parseReport('```json\n{"summary":"x","verdict":"pass","findings":[{"path":"a","line":1,"severity":"high","title":"t","body":"b"}]}\n```')).toThrow();
   });
 
+  test("keeps the related places of a finding, drops a null list, and rejects a bad place or too many", () => {
+    const own = { path: "a.ts", line: 3, severity: "error", title: "t", body: "b" };
+    const related = [{ path: "b.ts", line: 9, startLine: 7, suggestion: "x" }, { path: "c.ts", line: 1 }];
+    const parse = (extra: object) => parseReport(`\`\`\`json\n${JSON.stringify({ summary: "s", verdict: "fail", findings: [{ ...own, ...extra }] })}\n\`\`\``);
+    expect(parse({ related }).findings[0]!.related).toEqual(related);
+    expect(parse({ related: null }).findings[0]).not.toHaveProperty("related");
+    expect(() => parse({ related: [{ path: "b.ts", line: 0 }] })).toThrow();
+    expect(() => parse({ related: [{ line: 2 }] })).toThrow();
+    expect(() => parse({ related: Array.from({ length: 21 }, (_, n) => ({ path: "b.ts", line: n + 1 })) })).toThrow();
+  });
+
   test("keeps optional range and suggestion", () => {
     const finding = { path: "a.ts", line: 5, startLine: 3, severity: "warning" as const, title: "t", body: "b", suggestion: "x" };
     expect(parseReport(`\`\`\`json\n${JSON.stringify({ ...valid, findings: [finding] })}\n\`\`\``).findings[0]).toEqual(finding);

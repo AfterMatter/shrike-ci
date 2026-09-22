@@ -9,14 +9,18 @@ export interface ShrikenReference {
   value: string;
 }
 
-export const findingSchema = z.object({
+const spotSchema = z.object({
   path: z.string().min(1),
   line: z.number().int().positive(),
   startLine: z.number().int().positive().optional(),
+  suggestion: z.string().optional(),
+});
+
+export const findingSchema = spotSchema.extend({
   severity: z.enum(["info", "warning", "error"]),
   title: z.string().min(1).max(200),
   body: z.string().min(1),
-  suggestion: z.string().optional(),
+  related: z.array(spotSchema).max(20).optional(),
 });
 
 export const judgementSchema = z.object({
@@ -41,6 +45,7 @@ export const reportSchema = z.object({
 
 const scoresSchema = z.object({ scores: z.record(z.string(), z.number().int().min(0).max(100)) });
 
+export type Spot = z.infer<typeof spotSchema>;
 export type Finding = z.infer<typeof findingSchema>;
 export type Judgement = z.infer<typeof judgementSchema>;
 export type Report = z.infer<typeof reportSchema>;
@@ -73,6 +78,8 @@ export function parseJson<T>(text: string, schema: z.ZodType<T>, what = "report"
   }
   throw new Error(`${what} is not valid JSON: ${lastError}`);
 }
+
+export const spotAt = (spot: Spot): string => `${spot.path}:${spot.startLine === undefined ? spot.line : `${spot.startLine}-${spot.line}`}`;
 
 export const topFinding = (findings: Finding[]): Finding | undefined => findings.reduce<Finding | undefined>((top, finding) => (top && SEVERITY_RANK[top.severity] >= SEVERITY_RANK[finding.severity] ? top : finding), undefined);
 
