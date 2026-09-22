@@ -3,6 +3,7 @@
 import type { Problems } from "./autofix";
 import { ABOUT, CAPTURE, fileIn, shotFile, SIDES, videoFile, type Shot, type Side } from "./capture";
 import type { PullRequest, PullRequestHistory } from "./github";
+import { fenced, relatedChange, spotAt, type Finding } from "./report";
 import type { ReviewRun } from "./runner";
 import type { AutofixMode, Review } from "./settings";
 import type { Thread } from "./threads";
@@ -20,7 +21,7 @@ export const RETRY_PROMPT =
   "Your last message did not contain a valid report. Reply with only one ```json fenced block matching the output contract, and nothing else.";
 
 export const VERIFY_PROMPT =
-  "Now verify your own report before it is posted. Re-read each finding at its file and line with your tools and confirm it from the code: keep it only when you can point at the exact input or path that makes it wrong, downgrade it when it is real but not as bad as stated, drop it when it cannot be justified or the code already handles it. Keep the thread judgements. Reply with only the final ```json fenced block in the same output contract, and nothing else.";
+  "Now verify your own report before it is posted. Re-read each finding at its file and line, and at every related place, with your tools and confirm it from the code: keep it only when you can point at the exact input or path that makes it wrong, downgrade it when it is real but not as bad as stated, drop it when it cannot be justified or the code already handles it. Keep the thread judgements. Reply with only the final ```json fenced block in the same output contract, and nothing else.";
 
 export const ASK = "ask";
 
@@ -44,6 +45,9 @@ export const CAPTURE_TAKEN_RETRY_PROMPT = 'Your last message did not say which s
 const clipDiff = (diff: string): string => (diff.length > DIFF_LIMIT ? `${diff.slice(0, DIFF_LIMIT)}\n(diff truncated, read the remaining files with your tools)` : diff);
 
 const list = <T>(items: T[], render: (item: T, index: number) => string): string => (items.length ? items.map(render).join("\n") : "(none)");
+
+const findingLines = (finding: Finding, n: number): string =>
+  `${n + 1}. ${spotAt(finding)} [${finding.severity}] ${finding.title}\n${finding.body}${fenced("suggestion", finding.suggestion, "\n")}${(finding.related ?? []).map((spot) => `\nAlso at ${spotAt(spot)}${relatedChange(spot, "\n")}`).join("")}`;
 
 const threadLine = (thread: Thread): string => `- ${thread.fingerprint} at \`${thread.path}${thread.line === null ? "" : `:${thread.line}`}\` [${thread.severity}] ${thread.title} (${thread.skills.join(", ") || "shrike"})`;
 
@@ -89,7 +93,8 @@ Finish with exactly one \`\`\`json fenced block and no text after it:
       "severity": "info" | "warning" | "error",
       "title": "short label",
       "body": "markdown explanation with the reasoning",
-      "suggestion": "optional replacement for lines startLine..line, exact code, no fences"
+      "suggestion": "optional replacement for lines startLine..line, exact code, no fences",
+      "related": [{ "path": "other/file/path", "line": 7, "startLine": 5, "suggestion": "optional replacement there" }]
     }
   ],
   "threads": [{ "fingerprint": "<fingerprint from the list above>", "state": "fixed" | "open" | "wrong", "reason": "one sentence" }]
@@ -97,6 +102,8 @@ Finish with exactly one \`\`\`json fenced block and no text after it:
 Rules:
 - "line" is a line number in the new version of the file and must appear in the diff below as an added or context line. Anything else belongs in "summary".
 - "startLine" is optional and only for multi-line ranges; "suggestion" replaces the whole range.
+- "related" is optional: the other places the same problem lives or must change, in this or another file, each with the same fields as the finding's own place. When one problem needs changes in several places, report it once with "related" instead of one finding per place. A related line may be anywhere in the checked out files, not only in the diff.
+- When the review asks for a written answer rather than changes, report no findings and put the whole answer in "summary".
 - severity: error means broken in production or a security hole and fails the check, warning means fix before merge, info is a nit that never blocks.
 - verdict is fail if any error, warn if any warning, otherwise pass.
 - "threads" carries one entry for every open thread listed above${threads.length ? "" : ", so it is empty here"}. Do not repeat an open thread as a new finding.
@@ -188,8 +195,7 @@ ${list(screenshots, (i) => `- alt: ${i.alt}, url: ${i.url}`)}
 ${list(reviews, ({ name, report }) => `## Review: ${name}
 Verdict: ${report.verdict}
 Summary: ${report.summary}
-${list(report.findings, (f, n) => `${n + 1}. ${f.path}:${f.startLine === undefined ? f.line : `${f.startLine}-${f.line}`} [${f.severity}] ${f.title}
-${f.body}${f.suggestion === undefined ? "" : `\n\`\`\`suggestion\n${f.suggestion}\n\`\`\``}`)}`)}
+${list(report.findings, findingLines)}`)}
 
 # Diff
 \`\`\`diff
@@ -229,8 +235,7 @@ ${failure.log || "(no log available, read the check on GitHub)"}
 
 # Review findings to resolve
 ${list(problems.findings, (run) => `## Review: ${run.review} (${run.report!.verdict})
-${list(run.report!.findings, (f, n) => `${n + 1}. ${f.path}:${f.startLine === undefined ? f.line : `${f.startLine}-${f.line}`} [${f.severity}] ${f.title}
-${f.body}${f.suggestion === undefined ? "" : `\n\`\`\`suggestion\n${f.suggestion}\n\`\`\``}`)}`)}
+${list(run.report!.findings, findingLines)}`)}
 
 # Output contract
 When you are done, answer with one \`\`\`markdown fenced block and nothing after it: a first line of at most 70 characters saying what you changed (it becomes the commit title), then one or two short paragraphs explaining the cause and the fix. If something could not be fixed, say which and why. If you changed nothing, say so.`;

@@ -3,7 +3,7 @@
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { SEVERITY_RANK, type Finding, type Judgement } from "./report";
+import { fenced, relatedChange, SEVERITY_RANK, spotAt, spotRange, type Finding, type Judgement } from "./report";
 
 export interface Reply {
   id: number;
@@ -80,9 +80,9 @@ export async function flag(runs: { review: string; findings: Finding[] }[], line
   return [...merged.values()];
 }
 
-export function renderThread({ fingerprint, skills, finding }: Flagged): string {
-  const suggestion = finding.suggestion === undefined ? "" : `\n\n\`\`\`suggestion\n${finding.suggestion}\n\`\`\``;
-  return `${FINDING_MARKER} ${fingerprint} -->\n**[${finding.severity}] ${finding.title}** · ${skills.join(", ")}\n\n${finding.body}${suggestion}`;
+export function renderThread({ fingerprint, skills, finding }: Flagged, blob: string): string {
+  const related = (finding.related ?? []).map((spot) => `\n\nAlso at [\`${spotAt(spot)}\`](${blob}/${spot.path.split("/").map((part) => encodeURIComponent(part).replace(/[()]/g, (paren) => (paren === "(" ? "%28" : "%29"))).join("/")}#L${spotRange(spot).replace("-", "-L")})${relatedChange(spot, "\n\n")}`);
+  return `${FINDING_MARKER} ${fingerprint} -->\n**[${finding.severity}] ${finding.title}** · ${skills.join(", ")}\n\n${finding.body}${fenced("suggestion", finding.suggestion, "\n\n")}${related.join("")}`;
 }
 
 export function judge(reports: Judgement[][]): Map<string, Judgement> {

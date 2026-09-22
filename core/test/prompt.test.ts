@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { PullRequest, PullRequestHistory } from "../src/github";
-import { askReview, buildCapturePlanPrompt, buildCaptureShotsPrompt, buildPrompt, buildShrikenPrompt, CAPTURE_PLAN_RETRY_PROMPT, CAPTURE_TAKEN_RETRY_PROMPT, VERIFY_PROMPT } from "../src/prompt";
+import { askReview, buildAutofixPrompt, buildCapturePlanPrompt, buildCaptureShotsPrompt, buildPrompt, buildShrikenPrompt, CAPTURE_PLAN_RETRY_PROMPT, CAPTURE_TAKEN_RETRY_PROMPT, VERIFY_PROMPT } from "../src/prompt";
 import type { ReviewRun } from "../src/runner";
 
 const pr: PullRequest = { owner: "o", repo: "r", number: 4, title: "Add thing", body: "Closes #2\n![before](https://i/1)", author: "a", base: "main", head: "f", headSha: "abc", baseSha: "base", cloneUrl: "c", fork: false, private: false, files: [], diff: "+added line" };
@@ -29,6 +29,14 @@ describe("buildShrikenPrompt", () => {
     expect(prompt).toContain("# Diff\n```diff\n+added line\n```");
     expect(prompt).toContain("```markdown fenced block, then the ```json block, and nothing after it");
     expect(prompt).not.toContain('"findings"');
+    expect(prompt).not.toContain("Also at");
+  });
+
+  test("lists every related place of a finding with its suggestion to Shriken and to autofix", () => {
+    const grouped: ReviewRun = { review: "security-review", backend: "b", model: "m", status: "done", report: { summary: "s", verdict: "fail", findings: [{ path: "a.ts", line: 3, severity: "error", title: "Unchecked id", body: "Trusts the id.", suggestion: "own();", related: [{ path: "b.ts", line: 9, startLine: 7, suggestion: "check();" }, { path: "c.ts", line: 1 }, { path: "d.ts", line: 4, suggestion: "" }] }] } };
+    const listed = "1. a.ts:3 [error] Unchecked id\nTrusts the id.\n```suggestion\nown();\n```\nAlso at b.ts:7-9\n```\ncheck();\n```\nAlso at c.ts:1\nAlso at d.ts:4\nDelete these lines.";
+    expect(buildShrikenPrompt(pr, history, [grouped])).toContain(`## Review: security-review\nVerdict: fail\nSummary: s\n${listed}\n\n# Diff`);
+    expect(buildAutofixPrompt(pr, "all", { failures: [], findings: [grouped], pending: [] })).toContain(`## Review: security-review (fail)\n${listed}\n\n# Output contract`);
   });
 
   test("asks for short referenced paragraphs with at most three diff, suggestion or image blocks", () => {
@@ -134,6 +142,14 @@ describe("buildPrompt", () => {
     expect(prompt).toContain("one entry for every open thread listed above, so it is empty here. Do not repeat an open thread as a new finding.");
     expect(prompt).toContain("error means broken in production or a security hole and fails the check, warning means fix before merge, info is a nit that never blocks");
     expect(prompt).toContain("# Diff\n```diff\n+added line\n```");
+  });
+
+  test("the contract offers related places for one problem in several spots and a written answer with no findings", () => {
+    const prompt = buildPrompt(review, pr);
+    expect(prompt).toContain('"related": [{ "path": "other/file/path", "line": 7, "startLine": 5, "suggestion": "optional replacement there" }]');
+    expect(prompt).toContain('When one problem needs changes in several places, report it once with "related" instead of one finding per place. A related line may be anywhere in the checked out files, not only in the diff.');
+    expect(prompt).toContain('When the review asks for a written answer rather than changes, report no findings and put the whole answer in "summary".');
+    expect(VERIFY_PROMPT).toContain("and at every related place");
   });
 
   test("with earlier runs it lists the open threads with their fingerprints and human replies, the closed ones, and the previous decision", () => {

@@ -27,6 +27,27 @@ describe("parseReport", () => {
     expect(() => parseReport('```json\n{"summary":"x","verdict":"pass","findings":[{"path":"a","line":1,"severity":"high","title":"t","body":"b"}]}\n```')).toThrow();
   });
 
+  test("keeps the related places of a finding, drops a null list, and rejects a bad place or too many", () => {
+    const own = { path: "a.ts", line: 3, severity: "error" as const, title: "t", body: "b" };
+    const related = [{ path: "b.ts", line: 9, startLine: 7, suggestion: "x" }, { path: "c.ts", line: 1 }];
+    const parse = (extra: object) => parseReport(`\`\`\`json\n${JSON.stringify({ summary: "s", verdict: "fail", findings: [{ ...own, ...extra }] })}\n\`\`\``);
+    expect(parse({ related }).findings[0]!.related).toEqual(related);
+    expect(parse({ related: null }).findings[0]).not.toHaveProperty("related");
+    expect(parse({ startLine: 3, related: [{ path: "b.ts", line: 6, startLine: 6 }, { path: "c.ts", line: 3, startLine: 9, suggestion: "y" }] }).findings[0]).toEqual({ ...own, related: [{ path: "b.ts", line: 6 }, { path: "c.ts", line: 3, suggestion: "y" }] });
+    expect(() => parse({ related: [{ path: "b.ts", line: 0 }] })).toThrow();
+    expect(() => parse({ related: [{ line: 2 }] })).toThrow();
+    expect(() => parse({ related: Array.from({ length: 21 }, (_, n) => ({ path: "b.ts", line: n + 1 })) })).toThrow();
+  });
+
+  test("reads a lone backslash the model copied from a regex as a literal one, and leaves valid escapes alone", () => {
+    const text = '```json\n{"summary":"counts /^\\s*```/ and C:\\\\dir\\n","verdict":"pass","findings":[{"path":"a.ts","line":1,"severity":"info","title":"t","body":"use \\d+ \\"here\\" \\u00e9","suggestion":"x.replace(/\\./g, \\"\\")"}]}\n```';
+    expect(() => JSON.parse(text.slice(8, -4))).toThrow();
+    const report = parseReport(text);
+    expect(report.summary).toBe("counts /^\\s*```/ and C:\\dir\n");
+    expect(report.findings[0]!.body).toBe('use \\d+ "here" é');
+    expect(report.findings[0]!.suggestion).toBe('x.replace(/\\./g, "")');
+  });
+
   test("keeps optional range and suggestion", () => {
     const finding = { path: "a.ts", line: 5, startLine: 3, severity: "warning" as const, title: "t", body: "b", suggestion: "x" };
     expect(parseReport(`\`\`\`json\n${JSON.stringify({ ...valid, findings: [finding] })}\n\`\`\``).findings[0]).toEqual(finding);

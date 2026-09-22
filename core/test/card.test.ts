@@ -48,6 +48,47 @@ describe("renderCard", () => {
     expect(renderCard([run("a", { report: { summary: "s", verdict: "pass", findings: [] } })], { open: [] })).toContain("<!-- shrike:decision -->\nNothing blocks the merge.");
   });
 
+  test("folds what each finished review wrote, skips its own steps and unfinished reviews, and cuts a long answer without leaving a fence open", () => {
+    const long = `Intro.\n\n\`\`\`ts\n${"x".repeat(3100)}\n\`\`\`\n\nEnd.`;
+    const body = renderCard([
+      run("intent-review", { report: { summary: "  It belongs.\n\n**Keep** it.  ", verdict: "pass", findings: [] } }),
+      run("code-review", { status: "running" }),
+      run("slop-review", { status: "error", error: "boom", report: { summary: "partial", verdict: "pass", findings: [] } }),
+      run("shriken", { report: { summary: "the paragraphs", verdict: "pass", findings: [] } }),
+      run("autofix", { report: { summary: "Pushed abc", verdict: "pass", findings: [] } }),
+      run("explain", { report: { summary: long, verdict: "pass", findings: [] } }),
+    ]);
+    expect(body).toContain("<details><summary>intent-review said</summary>\n\nIt belongs.\n\n**Keep** it.\n\n</details>");
+    expect(body).not.toMatch(/(code-review|slop-review|shriken|autofix) said/);
+    const cut = body.slice(body.indexOf("<details><summary>explain said</summary>"));
+    expect(cut).toContain(`\`\`\`ts\n${"x".repeat(3000 - 14)}\n\`\`\`\n\n(cut here, the check has the full text)\n\n</details>`);
+    expect(cut).not.toContain("End.");
+    expect(body.match(/```/g)!.length % 2).toBe(0);
+    const short = renderCard([run("ask", { report: { summary: "Try:\n\n```ts\nretry()", verdict: "pass", findings: [] } })]);
+    expect(short).toContain("<details open><summary>ask said</summary>\n\nTry:\n\n```ts\nretry()\n```\n\n</details>");
+    expect(short).not.toContain("cut here");
+    const inline = renderCard([run("a", { report: { summary: "Wrap the value in ``` before posting.", verdict: "pass", findings: [] } })]);
+    expect(inline).toContain("<summary>a said</summary>\n\nWrap the value in ``` before posting.\n\n</details>");
+    const nested = renderCard([run("a", { report: { summary: "```ts\nconst a = 1;\n```\n\nPy:\n\n```py\nx = '```'\nrest", verdict: "pass", findings: [] } })]);
+    expect(nested).toContain("x = '```'\nrest\n```\n\n</details>");
+    const reopened = renderCard([run("a", { report: { summary: "```\n```ts\ncode\n```\n```", verdict: "pass", findings: [] } })]);
+    expect(reopened).toContain("```\n```ts\ncode\n```\n```\n```\n\n</details>");
+    const closed = renderCard([run("a", { report: { summary: "```ts\ncode\n```\n\nDone.", verdict: "pass", findings: [] } })]);
+    expect(closed).toContain("```ts\ncode\n```\n\nDone.\n\n</details>");
+    const note = (summary: string) => renderCard([run("a", { report: { summary, verdict: "pass", findings: [] } })]).split("<summary>a said</summary>\n\n")[1]!.split("\n\n</details>")[0];
+    expect(note("Wide:\n\n````\n```\n````\n\nDone.")).toBe("Wide:\n\n````\n```\n````\n\nDone.");
+    expect(note("Wide:\n\n````md\n```\ninner")).toBe("Wide:\n\n````md\n```\ninner\n````");
+    expect(note("Tilde:\n\n~~~\n```\nx")).toBe("Tilde:\n\n~~~\n```\nx\n~~~");
+    expect(note("Indented:\n\n    ```\n    code")).toBe("Indented:\n\n    ```\n    code");
+    expect(note("``` inline ``` in prose")).toBe("``` inline ``` in prose");
+  });
+
+  test("a nit spread over several places says how many more", () => {
+    const nit = { path: "src/c.ts", line: 8, severity: "info" as const, title: "Same typo", body: "Typo.", related: [{ path: "src/d.ts", line: 1 }, { path: "src/e.ts", line: 2 }] };
+    expect(renderCard([], { nits: [{ finding: nit, skills: ["slop-review"] }] })).toContain("- `src/c.ts:8` and 2 other places **Same typo** · slop-review: Typo.");
+    expect(renderCard([], { nits: [{ finding: { ...nit, related: [nit.related[0]!] }, skills: ["slop-review"] }] })).toContain("- `src/c.ts:8` and 1 other place **Same typo**");
+  });
+
   test("the verdict line is the worst review verdict, incomplete when every review failed, and ignores Shriken, capture and autofix", () => {
     expect(verdictLine([warned, run("b", { report: { summary: "s", verdict: "fail", findings: [] } }), run("shriken", { report: { summary: "s", verdict: "fail", findings: [] } })])).toBe("changes needed");
     expect(verdictLine([run("a", { report: { summary: "s", verdict: "pass", findings: [] } }), run("capture", { report: { summary: "s", verdict: "fail", findings: [] } })])).toBe("pass");
@@ -67,5 +108,16 @@ describe("renderCard", () => {
     const decision = plainDecision(summary);
     expect(decision).toBe("Hold and do not merge. The deciding thing is the pull request's own do-not-merge instruction, since this is a lifecycle test fixture rather than a change meant to land, even though the fix in `e24da50` is verified and every review — code-review, house-style, slop-review, cleanup — passes. I would change my mind if the author updates the description to drop that instruction and asks for the pull request to be merged.");
     expect(decision).not.toMatch(/```|,,|\[\w+:/);
+  });
+
+  test("a live summary that ends inside an unclosed suggestion block falls back to its last prose paragraph", async () => {
+    const decision = plainDecision(await Bun.file(`${import.meta.dir}/fixtures/shriken-unclosed-fence.md`).text());
+    expect(decision).toStartWith("Three reviews converge on that hole");
+    expect(decision).toEndWith("The suggested fix constrains the name before it reaches the filesystem:");
+    expect(decision).not.toMatch(/```|removeUpload|\[\w+:/);
+    const again = plainDecision(await Bun.file(`${import.meta.dir}/fixtures/shriken-trailing-code.md`).text());
+    expect(again).not.toMatch(/```|const findingLines|\[\w+:/);
+    expect(again.length).toBeGreaterThan(40);
+    expect(plainDecision("Hold it [review:a].\n\n```diff\n+x")).toBe("Hold it.");
   });
 });
