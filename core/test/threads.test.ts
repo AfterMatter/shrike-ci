@@ -41,6 +41,9 @@ describe("fingerprints", () => {
     expect(deleted).not.toContain("```");
     const odd = renderThread({ fingerprint: "0123456789abcdef", skills: ["a"], finding: finding({ related: [{ path: "app/(auth)/my page.tsx", line: 3 }] }) }, BLOB);
     expect(odd).toEndWith(`Also at [\`app/(auth)/my page.tsx:3\`](${BLOB}/app/%28auth%29/my%20page.tsx#L3)`);
+    const reserved = renderThread({ fingerprint: "0123456789abcdef", skills: ["a"], finding: finding({ related: [{ path: "docs/cache#v1?.md", line: 2 }, { path: "100%.md", line: 1 }] }) }, BLOB);
+    expect(reserved).toContain(`(${BLOB}/docs/cache%23v1%3F.md#L2)`);
+    expect(reserved).toContain(`(${BLOB}/100%25.md#L1)`);
   });
 
   test("replies tell Shrike's own answers from a human's, and a closing reply marks a thread Shrike closed", () => {
