@@ -3,14 +3,19 @@ import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentSession, Backend } from "../src/backends";
-import { CAPTURE_MARKER, mediaUrl } from "../src/capture";
+import { mediaUrl } from "../src/capture";
+import { DECISION_MARKER, PATCH_MARKER } from "../src/card";
 import { git } from "../src/checkout";
+import { patchId } from "../src/diff";
 import { STATUS_MARKER, type CheckRun, type MediaFile, type PullRequest, type PullRequestClient, type PullRequestHistory } from "../src/github";
-import type { Report } from "../src/report";
-import { renderStatus, runJob, type ReviewRun } from "../src/runner";
+import { VERIFY_PROMPT } from "../src/prompt";
+import type { Finding, Report } from "../src/report";
+import { runJob } from "../src/runner";
 import { resolveSettings, type Review } from "../src/settings";
+import { fingerprintOf, type Thread } from "../src/threads";
 
-const report = (verdict: Report["verdict"], findings: Report["findings"] = []): string => `\`\`\`json\n${JSON.stringify({ summary: `${verdict} summary`, verdict, findings })}\n\`\`\``;
+const findingOf = (verdict: Report["verdict"]): Finding[] => (verdict === "pass" ? [] : [{ path: "f.txt", line: 1, severity: verdict === "warn" ? "warning" : "error", title: `${verdict} finding`, body: `${verdict} body` }]);
+const report = (verdict: Report["verdict"], findings: Report["findings"] = findingOf(verdict), extra: Partial<Report> = {}): string => `\`\`\`json\n${JSON.stringify({ summary: `${verdict} summary`, verdict, findings, ...extra })}\n\`\`\``;
 const SUMMARY = "It adds a line [commit:abcdef0] to [file:f.txt:1].\n\nNothing blocks the merge [review:code-review].";
 const SCORES = '```json\n{"scores": {"code-review": 70, "slop-review": 80, "security-review": 40, "cleanup": 90, "extra": 1}}\n```';
 const shriken = [`Here it is:\n\`\`\`markdown\n${SUMMARY}\n\`\`\`\n${SCORES}`];
@@ -22,6 +27,8 @@ const reviews: Review[] = ["code-review", "slop-review", "intent-review", "secur
 const settings = (raw: Record<string, unknown> = {}) => resolveSettings(raw);
 const THREE = ["slop-review", "code-review", "security-review"];
 const history: PullRequestHistory = { commits: [{ sha: "abcdef0123", headline: "Add line", author: "a", date: "2026-01-01T00:00:00Z" }], comments: [], issues: [], images: [] };
+const LINE = "const total = rows.length;";
+const thread = (extra: Partial<Thread> = {}): Thread => ({ id: "T1", fingerprint: fingerprintOf("f.txt", "warn finding"), path: "f.txt", line: 1, title: "warn finding", severity: "warning", skills: ["slop-review"], resolved: false, closedByShrike: false, commentId: 11, commentNodeId: "C1", url: "https://gh/t/1", replies: [], ...extra });
 
 async function repoAtHead(): Promise<{ dir: string; sha: string }> {
   const dir = await mkdtemp(join(tmpdir(), "runner-"));
@@ -44,42 +51,59 @@ const prAt = (dir: string, headSha: string, number = 1, baseSha = headSha): Pull
   cloneUrl: dir,
   fork: false,
   private: false,
-  files: [],
-  diff: "+added line",
+  files: [{ path: "f.txt", status: "modified", additions: 1, deletions: 0, lines: new Set([1, 2]) }],
+  diff: "diff --git a/f.txt b/f.txt\n--- a/f.txt\n+++ b/f.txt\n@@ -1,1 +1,2 @@\n+added line\n context\n",
 });
 
+interface Session {
+  model: string;
+  prompts: string[];
+  closed: boolean;
+  write: boolean;
+  captureDir?: string;
+}
+
 interface Trace {
-  sessions: { model: string; prompts: string[]; closed: boolean; write: boolean; captureDir?: string }[];
-  reviews: string[];
+  sessions: Session[];
+  reviews: { path: string; line: number; startLine?: number; body: string }[][];
   checks: { review: string; conclusion?: string; title?: string }[];
   statuses: string[];
-  comments: string[];
+  replies: { commentId: number; text: string; closing: boolean }[];
+  closed: string[];
+  copied: string[];
   histories: number;
   polls: number;
   logs: number[];
   published: { branch: string; files: MediaFile[]; message: string; token: string }[];
+  peak: number;
 }
 
 interface Fixtures {
   checks?: CheckRun[][];
+  threads?: Thread[];
+  previous?: string;
+  closeFails?: boolean;
   onFix?: (cwd: string) => Promise<void>;
   onShots?: (side: "before" | "after", captureDir: string, url: string) => Promise<void>;
 }
 
 function fakes(replies: Record<string, string[]>, pr: PullRequest, fixtures: Fixtures = {}) {
-  const trace: Trace = { sessions: [], reviews: [], checks: [], statuses: [], comments: [], histories: 0, polls: 0, logs: [], published: [] };
+  const trace: Trace = { sessions: [], reviews: [], checks: [], statuses: [], replies: [], closed: [], copied: [], histories: 0, polls: 0, logs: [], published: [], peak: 0 };
   const nameOf = (text: string) =>
     text.includes("You are Shriken") ? "shriken" : text.includes("You are Shrike, fixing") ? "autofix" : text.includes("You are Shrike, preparing before and after") ? "capture" : /running the "([a-z-]+)" review/.exec(text)?.[1];
+  let opened = 0;
   const backend: Backend = {
     name: "fake",
     defaultModel: "fake/default",
     async open({ model, cwd, write, captureDir }): Promise<AgentSession> {
-      const session = { model: model ?? "", prompts: [] as string[], closed: false, write: write === true, ...(captureDir ? { captureDir } : {}) };
+      const session: Session = { model: model ?? "", prompts: [], closed: false, write: write === true, ...(captureDir ? { captureDir } : {}) };
       trace.sessions.push(session);
+      trace.peak = Math.max(trace.peak, ++opened);
       const answered: Record<string, number> = {};
       return {
         async prompt(text) {
           session.prompts.push(text);
+          await new Promise((resolve) => setTimeout(resolve, 1));
           const review = nameOf(text) ?? nameOf(session.prompts.findLast((p) => nameOf(p) !== undefined)!)!;
           const reply = (replies[review] ?? [])[answered[review] ?? 0];
           answered[review] = (answered[review] ?? 0) + 1;
@@ -91,6 +115,7 @@ function fakes(replies: Record<string, string[]>, pr: PullRequest, fixtures: Fix
         },
         async close() {
           session.closed = true;
+          opened -= 1;
         },
       };
     },
@@ -110,19 +135,34 @@ function fakes(replies: Record<string, string[]>, pr: PullRequest, fixtures: Fix
       trace.histories += 1;
       return history;
     },
-    async postReview(_pr: PullRequest, review: string) {
-      trace.reviews.push(review);
-      return { id: 1, url: `https://r/${review}` };
+    async threads() {
+      return fixtures.threads ?? [];
+    },
+    async postReview(_pr: PullRequest, threads: Trace["reviews"][number]) {
+      trace.reviews.push(threads);
+      return { id: 1, url: "https://r/review" };
+    },
+    async reply(_pr: PullRequest, commentId: number, text: string, closing = false) {
+      trace.replies.push({ commentId, text, closing });
+      return `https://gh/c/${commentId}/reply`;
+    },
+    async close(own: Thread) {
+      if (fixtures.closeFails) throw new Error("Resource not accessible by integration");
+      trace.closed.push(own.id);
+      return "resolved";
+    },
+    async copyChecks(_pr: PullRequest, fromSha: string) {
+      trace.copied.push(fromSha);
+      return ["shrike/code-review"];
     },
     async startCheck(_pr: PullRequest, review: string) {
       const check = { review, conclusion: undefined as string | undefined, title: undefined as string | undefined };
       trace.checks.push(check);
       return { finish: async (conclusion: string, title: string) => void Object.assign(check, { conclusion, title }) };
     },
-    async stickyComment(_pr: PullRequest, marker: string, body: string) {
-      if (marker !== STATUS_MARKER) trace.comments.push(`${marker}\n${body}`);
-      else trace.statuses.push(body);
-      return { id: 2, url: `https://c/${marker}`, update: async (next: string) => void trace.statuses.push(next) };
+    async stickyComment(_pr: PullRequest, _marker: string, body: string | ((previous: string | null) => string)) {
+      trace.statuses.push(typeof body === "string" ? body : body(fixtures.previous ?? null));
+      return { id: 2, url: `https://c/${STATUS_MARKER}`, previous: fixtures.previous ?? null, update: async (next: string) => void trace.statuses.push(next) };
     },
     async publish(_pr: PullRequest, branch: string, files: MediaFile[], message: string, identity: { token: string }) {
       trace.published.push({ branch, files, message, token: identity.token });
@@ -133,14 +173,14 @@ function fakes(replies: Record<string, string[]>, pr: PullRequest, fixtures: Fix
 }
 
 describe("runJob", () => {
-  test("runs reviews in order with one session each, posts per review, then shriken last", async () => {
+  test("runs the reviews in parallel fresh sessions, verifies the ones with findings, posts one review, then shriken last", async () => {
     const { dir, sha } = await repoAtHead();
     const pr = prAt(dir, sha);
-    const { trace, backend, gh } = fakes({ "code-review": [report("pass")], "slop-review": [report("warn")], "security-review": [report("fail")], shriken }, pr);
+    const { trace, backend, gh } = fakes({ "code-review": [report("pass")], "slop-review": [report("warn"), report("warn")], "security-review": [report("fail"), report("fail")], shriken }, pr);
     const seen: [string, string][] = [];
     const runs = await runJob(
       { owner: "o", repo: "r", pr: 1, trigger: "pull_request", reviews: [] },
-      { gh, backend, settings: settings({ reviews: THREE }), reviews, cwd: dir, log: () => {}, onRun: async (run) => void seen.push([run.review, run.status]) },
+      { gh, backend, settings: settings({ reviews: THREE }), reviews, cwd: dir, site: "https://shrike.example/", log: () => {}, onRun: async (run) => void seen.push([run.review, run.status]) },
     );
     expect(runs.map((r) => [r.review, r.status, r.report?.verdict])).toEqual([
       ["slop-review", "done", "warn"],
@@ -149,42 +189,49 @@ describe("runJob", () => {
       ["shriken", "done", "fail"],
     ]);
     expect(trace.sessions).toHaveLength(4);
-    expect(trace.sessions.map((s) => s.prompts.length)).toEqual([1, 1, 1, 1]);
+    expect(trace.peak).toBe(3);
+    expect(trace.sessions.map((s) => s.prompts.length)).toEqual([2, 1, 2, 1]);
+    expect(trace.sessions[0]!.prompts[1]).toBe(VERIFY_PROMPT);
     expect(trace.sessions.every((s) => s.closed)).toBe(true);
     expect(trace.sessions.map((s) => s.model)).toEqual(["fake/default", "fake/default", "fake/default", "fake/default"]);
     expect(trace.sessions[0]!.prompts[0]).toContain("# Review: slop-review\nRules of slop-review.");
-    expect(trace.sessions.every((s) => s.prompts[0]!.includes("# Diff"))).toBe(true);
+    expect(trace.sessions.slice(0, 3).every((s) => s.prompts[0]!.includes("# Diff"))).toBe(true);
     expect(trace.sessions[3]!.prompts[0]).toContain("## Review: security-review\nVerdict: fail");
     expect(trace.sessions[3]!.prompts[0]).toContain("- abcdef0 Add line");
     expect(trace.histories).toBe(1);
-    expect(trace.reviews).toEqual(["slop-review", "code-review", "security-review"]);
-    expect(trace.checks.map((c) => [c.review, c.conclusion])).toEqual([
-      ["slop-review", "neutral"],
-      ["code-review", "success"],
-      ["security-review", "failure"],
-      ["shriken", "neutral"],
+    expect(trace.reviews).toHaveLength(1);
+    expect(trace.reviews[0]!.map((own) => [own.path, own.line, own.body.split("\n")[1]])).toEqual([
+      ["f.txt", 1, "**[warning] warn finding** · slop-review"],
+      ["f.txt", 1, "**[error] fail finding** · security-review"],
+    ]);
+    expect(trace.reviews[0]![0]!.body).toStartWith(`<!-- shrike:finding ${fingerprintOf("f.txt", "warn finding")} -->\n`);
+    expect(trace.checks.map((c) => [c.review, c.conclusion, c.title])).toEqual([
+      ["slop-review", "neutral", "warn: warn finding"],
+      ["code-review", "success", "pass: no findings"],
+      ["security-review", "failure", "fail: fail finding"],
+      ["shriken", "neutral", "summary written"],
     ]);
     expect(runs.every((r) => r.usage?.tokens === 10 && r.startedAt && r.finishedAt)).toBe(true);
     expect(runs.at(-1)!.report).toEqual({ summary: SUMMARY, verdict: "fail", findings: [], scores: { "slop-review": 80, "code-review": 70, "security-review": 40 } });
-    expect(trace.sessions[3]!.prompts[0]).toContain('{"scores": {"<review>": <0 to 100>}} with one integer for each of slop-review, code-review, security-review.');
-    expect(runs[0]!.transcript).toEqual([
-      { role: "prompt", text: trace.sessions[0]!.prompts[0]! },
-      { role: "reply", text: report("warn") },
-    ]);
-    expect(seen.length).toBe(4);
-    expect(runs.at(-1)!.posted).toBeUndefined();
-    expect(trace.comments).toEqual([]);
-    expect(trace.statuses[0]).toContain("| slop-review | queued |");
-    expect(trace.statuses[0]).not.toContain("shriken");
-    expect(trace.statuses.at(-1)).toContain("| security-review | done | fail, 0 finding(s) | [review](https://r/security-review) |");
-    expect(trace.statuses.at(-1)).toContain("| shriken | done | summary written |  |");
-    expect(trace.statuses.at(-1)).not.toContain("[summary]");
+    expect(runs.map((r) => r.posted?.url)).toEqual(["https://r/review", undefined, "https://r/review", undefined]);
+    expect(runs[0]!.transcript!.map((turn) => turn.role)).toEqual(["prompt", "reply", "prompt", "reply"]);
     expect(seen).toEqual([
-      ["slop-review", "done"],
       ["code-review", "done"],
+      ["slop-review", "done"],
       ["security-review", "done"],
       ["shriken", "done"],
     ]);
+    expect(trace.statuses[0]).toStartWith(`${PATCH_MARKER} ${patchId(pr.diff)} ${sha} -->\n\n## Shrike · reviewing\n\n${DECISION_MARKER}\nThe reviews are running, the verdict follows.`);
+    expect(trace.statuses[0]).toContain("| slop-review |  | queued |  |");
+    expect(trace.statuses[0]).not.toContain("shriken");
+    const last = trace.statuses.at(-1)!;
+    expect(last).toContain("## Shrike · changes needed\n\n<!-- shrike:decision -->\nNothing blocks the merge.");
+    expect(last).toContain("| slop-review | 80 | warn, 1 finding | [review](https://r/review) |");
+    expect(last).toContain("| code-review | 70 | pass, 0 findings |  |");
+    expect(last).toContain("| shriken |  | summary written |  |");
+    expect(last).toContain("### Open (2)\n- `new` **[error] fail finding** `f.txt:1` · security-review [thread](https://r/review)\n- `new` **[warning] warn finding** `f.txt:1` · slop-review [thread](https://r/review)");
+    expect(last).toEndWith("[Open on Shrike](https://shrike.example/#/o/r/pull/1)");
+    expect(last).not.toContain("Resolved since");
   });
 
   test("a comment prompt runs one ask review with the comment's words, unless every word names a review", async () => {
@@ -200,7 +247,7 @@ describe("runJob", () => {
     expect(asked.trace.sessions[0]!.prompts[0]).toContain("A maintainer asked in a pull request comment:\n\nis the retry loop in api.ts safe?");
     expect(asked.trace.checks.map((c) => [c.review, c.conclusion])).toEqual([["ask", "success"]]);
 
-    const unknown = fakes({ ask: [report("warn")] }, pr);
+    const unknown = fakes({ ask: [report("warn"), report("warn")] }, pr);
     const mixed = await runJob(
       { owner: "o", repo: "r", pr: 1, trigger: "comment", reviews: ["cleanup", "please"], prompt: "cleanup please" },
       { gh: unknown.gh, backend: unknown.backend, settings: settings({ shriken: false }), reviews, cwd: dir, log: () => {} },
@@ -220,6 +267,27 @@ describe("runJob", () => {
     expect(refused.map((r) => [r.review, r.status, r.error])).toEqual([["ask", "error", "ask is what a comment asks for, not a review"]]);
   });
 
+  test("a question asked inside a Shrike thread is answered as a reply in that thread, with the thread in the prompt and no review posted", async () => {
+    const { dir, sha } = await repoAtHead();
+    const pr = prAt(dir, sha);
+    const own = thread({ replies: [{ id: 12, author: "bob", body: "shrike why is this wrong?" }] });
+    const answer = report("warn", findingOf("warn"), { summary: "Because the header counts.", threads: [{ fingerprint: own.fingerprint, state: "wrong" }] });
+    const { trace, backend, gh } = fakes({ ask: [answer, answer] }, pr, { threads: [own] });
+    const runs = await runJob(
+      { owner: "o", repo: "r", pr: 1, trigger: "comment", reviews: [], prompt: "why is this wrong?", replyTo: 12 },
+      { gh, backend, settings: settings({ shriken: false }), reviews, cwd: dir, log: () => {} },
+    );
+    expect(runs.map((r) => [r.review, r.status])).toEqual([["ask", "done"]]);
+    expect(trace.sessions[0]!.prompts[0]).toContain('in the thread at `f.txt:1` about "warn finding":\n\nwhy is this wrong?\n\nThe thread so far:\n- bob: shrike why is this wrong?');
+    expect(trace.sessions[0]!.prompts[0]).not.toContain("# Earlier runs");
+    expect(trace.replies).toEqual([{ commentId: 12, text: "Because the header counts.", closing: false }]);
+    expect(runs[0]!.posted).toEqual({ id: 12, url: "https://gh/c/12/reply" });
+    expect(trace.reviews).toEqual([]);
+    expect(trace.closed).toEqual([]);
+    expect(trace.statuses.at(-1)).toContain("### Open (1)\n- **[warning] warn finding** `f.txt:1` · slop-review [thread](https://gh/t/1)");
+    expect(trace.statuses.at(-1)).not.toContain("`new`");
+  });
+
   test("retries once on invalid output, isolates failures, honours requested reviews, model and shriken off", async () => {
     const { dir, sha } = await repoAtHead();
     const pr = prAt(dir, sha);
@@ -233,20 +301,194 @@ describe("runJob", () => {
       ["code-review", "error"],
       ["missing-review", "error"],
     ]);
-    expect(trace.statuses[0]).toContain("| missing-review | error | unknown review |");
+    expect(trace.statuses[0]).toContain("| missing-review |  | unknown review |  |");
     expect(trace.sessions.map((s) => s.prompts.length)).toEqual([2, 2]);
     expect(trace.sessions[0]!.prompts[1]).toMatch(/did not contain a valid report/);
     expect(trace.sessions[0]!.model).toBe("fake/custom");
     expect(runs[1]!.error).toMatch(/not valid JSON/);
     expect(runs[2]!.error).toBe("unknown review");
-    expect(trace.reviews).toEqual(["cleanup"]);
+    expect(trace.reviews).toEqual([]);
     expect(trace.checks.map((c) => [c.review, c.conclusion])).toEqual([
       ["cleanup", "success"],
       ["code-review", "failure"],
     ]);
-    expect(trace.statuses.at(-1)).toContain("| missing-review | error |");
-    expect(trace.comments).toEqual([]);
+    expect(trace.statuses.at(-1)).toContain("| missing-review |  | unknown review |  |");
+    expect(trace.statuses.at(-1)).toContain("## Shrike · pass");
     expect(trace.histories).toBe(0);
+  });
+
+  test("the verdict is derived from the findings, never chosen, and the verify turn's report replaces the first", async () => {
+    const { dir, sha } = await repoAtHead();
+    const pr = prAt(dir, sha);
+    const first = report("fail", [{ path: "f.txt", line: 1, severity: "error", title: "Leak", body: "b" }, { path: "f.txt", line: 2, severity: "warning", title: "Slow", body: "b" }]);
+    const verified = report("fail", [{ path: "f.txt", line: 2, severity: "warning", title: "Slow", body: "confirmed" }]);
+    const { trace, backend, gh } = fakes({ "code-review": [first, verified] }, pr);
+    const runs = await runJob({ owner: "o", repo: "r", pr: 1, trigger: "comment", reviews: ["code-review"] }, { gh, backend, settings: settings({ shriken: false }), reviews, cwd: dir, log: () => {} });
+    expect(runs[0]!.report).toEqual({ summary: "fail summary", verdict: "warn", findings: [{ path: "f.txt", line: 2, severity: "warning", title: "Slow", body: "confirmed" }] });
+    expect(trace.checks[0]).toEqual({ review: "code-review", conclusion: "neutral", title: "warn: Slow" });
+    expect(trace.reviews[0]!.map((own) => own.body.split("\n")[1])).toEqual(["**[warning] Slow** · code-review"]);
+    const chosen = fakes({ "code-review": [report("fail", [])] }, pr);
+    const passed = await runJob({ owner: "o", repo: "r", pr: 1, trigger: "comment", reviews: ["code-review"] }, { gh: chosen.gh, backend: chosen.backend, settings: settings({ shriken: false }), reviews, cwd: dir, log: () => {} });
+    expect(passed[0]!.report?.verdict).toBe("pass");
+    expect(chosen.trace.sessions[0]!.prompts).toHaveLength(1);
+    expect(chosen.trace.checks[0]!.title).toBe("pass: no findings");
+  });
+
+  test("info findings become nits on the card and never a thread, and the same line flagged by two skills becomes one thread naming both", async () => {
+    const { dir, sha } = await repoAtHead();
+    await writeFile(join(dir, "f.txt"), `${LINE}\nsecond\n`);
+    const pr = prAt(dir, sha);
+    const nit = { path: "f.txt", line: 2, severity: "info" as const, title: "Trailing space", body: "Here.\nMore." };
+    const same = (severity: "warning" | "error", title: string) => report(severity === "error" ? "fail" : "warn", [{ path: "f.txt", line: 1, severity, title, body: "b" }, nit]);
+    const { trace, backend, gh } = fakes({ "code-review": [same("warning", "Wrong count"), same("warning", "Wrong count")], "security-review": [same("error", "Off by one"), same("error", "Off by one")] }, pr);
+    const runs = await runJob({ owner: "o", repo: "r", pr: 1, trigger: "comment", reviews: ["code-review", "security-review"] }, { gh, backend, settings: settings({ shriken: false }), reviews, cwd: dir, log: () => {} });
+    expect(runs.map((r) => r.report?.verdict)).toEqual(["warn", "fail"]);
+    expect(trace.reviews).toHaveLength(1);
+    expect(trace.reviews[0]).toHaveLength(1);
+    expect(trace.reviews[0]![0]!.body).toBe(`<!-- shrike:finding ${fingerprintOf("f.txt", LINE)} -->\n**[error] Off by one** · code-review, security-review\n\nb`);
+    const last = trace.statuses.at(-1)!;
+    expect(last).toContain("### Open (1)\n- `new` **[error] Off by one** `f.txt:1` · code-review, security-review [thread](https://r/review)");
+    expect(last).toContain("<details><summary>Nits (1)</summary>\n\n- `f.txt:2` **Trailing space** · code-review, security-review: Here.\n\n</details>");
+    expect(last).toContain("<!-- shrike:decision -->\n1 problem open, 1 new in this push.");
+    expect(runs.every((r) => r.posted?.url === "https://r/review")).toBe(true);
+  });
+
+  test("a finding that matches an open thread is not posted again even after a line shift, so a push with nothing new creates no review", async () => {
+    const { dir, sha } = await repoAtHead();
+    await writeFile(join(dir, "f.txt"), `moved\n${LINE}\n`);
+    const pr = prAt(dir, sha);
+    const open = thread({ fingerprint: fingerprintOf("f.txt", LINE), title: "Wrong count", skills: ["code-review"] });
+    const judged = report("warn", [{ path: "f.txt", line: 2, severity: "warning", title: "Wrong count", body: "still" }], { threads: [{ fingerprint: open.fingerprint, state: "open", reason: "still counts the header" }] });
+    const { trace, backend, gh } = fakes({ "code-review": [judged, judged] }, pr, { threads: [open] });
+    const runs = await runJob({ owner: "o", repo: "r", pr: 1, trigger: "pull_request", reviews: [] }, { gh, backend, settings: settings({ reviews: ["code-review"], shriken: false }), reviews, cwd: dir, log: () => {} });
+    expect(runs[0]!.report?.findings).toHaveLength(1);
+    expect(trace.reviews).toEqual([]);
+    expect(trace.replies).toEqual([]);
+    expect(trace.closed).toEqual([]);
+    expect(runs[0]!.posted).toBeUndefined();
+    expect(trace.sessions[0]!.prompts[0]).toContain(`# Earlier runs on this pull request\nOpen threads Shrike posted on earlier pushes, each with its fingerprint. Judge every one against the current code: fixed when the code no longer has the problem, open when it still does, wrong when the finding never held.\n- ${open.fingerprint} at \`f.txt:1\` [warning] Wrong count (code-review)`);
+    expect(trace.statuses.at(-1)).toContain("### Open (1)\n- **[warning] Wrong count** `f.txt:1` · code-review [thread](https://gh/t/1)");
+    expect(trace.statuses.at(-1)).not.toContain("`new`");
+  });
+
+  test("threads the agent judges fixed or wrong get a closing reply and are resolved, unless a human replied, and a maintainer's own close is a won't fix", async () => {
+    const { dir, sha } = await repoAtHead();
+    const pr = prAt(dir, sha);
+    const fixed = thread({ id: "T1", fingerprint: "a".repeat(16), title: "Fixed one", commentId: 11, url: "https://gh/t/1" });
+    const discussed = thread({ id: "T2", fingerprint: "b".repeat(16), title: "Discussed one", commentId: 12, url: "https://gh/t/2", replies: [{ id: 22, author: "bob", body: "is this really a problem?" }] });
+    const open = thread({ id: "T3", fingerprint: "c".repeat(16), title: "Open one", commentId: 13, url: "https://gh/t/3", skills: ["security-review"] });
+    const wrong = thread({ id: "T4", fingerprint: "d".repeat(16), title: "Wrong one", commentId: 14, url: "https://gh/t/4" });
+    const wontFix = thread({ id: "T5", fingerprint: "f".repeat(16), title: "Intended one", resolved: true, closedByShrike: false });
+    const shrikeClosed = thread({ id: "T6", fingerprint: fingerprintOf("f.txt", "warn finding"), title: "warn finding", resolved: true, closedByShrike: true });
+    const judged = report("warn", findingOf("warn"), {
+      threads: [
+        { fingerprint: fixed.fingerprint, state: "fixed", reason: "the count now skips the header" },
+        { fingerprint: discussed.fingerprint, state: "fixed" },
+        { fingerprint: wrong.fingerprint, state: "wrong", reason: "the value is validated upstream" },
+      ],
+    });
+    const security = report("pass", [], { threads: [{ fingerprint: open.fingerprint, state: "open" }, { fingerprint: fixed.fingerprint, state: "open" }] });
+    const { trace, backend, gh } = fakes({ "slop-review": [judged, judged], "security-review": [security] }, pr, { threads: [fixed, discussed, open, wrong, wontFix, shrikeClosed] });
+    const runs = await runJob({ owner: "o", repo: "r", pr: 1, trigger: "pull_request", reviews: [] }, { gh, backend, settings: settings({ reviews: ["slop-review", "security-review"], shriken: false }), reviews, cwd: dir, log: () => {} });
+    expect(runs.map((r) => r.status)).toEqual(["done", "done"]);
+    expect(trace.sessions[0]!.prompts[0]).toContain(`- ${fixed.fingerprint} at`);
+    expect(trace.sessions[0]!.prompts[0]).toContain(`- ${discussed.fingerprint} at \`f.txt:1\` [warning] Discussed one (slop-review)\n  bob replied: is this really a problem?`);
+    expect(trace.sessions[0]!.prompts[0]).not.toContain(`- ${open.fingerprint} at`);
+    expect(trace.sessions[0]!.prompts[0]).toContain(`Threads a maintainer closed on purpose, do not report these again:\n- ${wontFix.fingerprint} at`);
+    expect(trace.sessions[0]!.prompts[0]).not.toContain(shrikeClosed.fingerprint);
+    expect(trace.sessions[1]!.prompts[0]).toContain(`- ${open.fingerprint} at`);
+    expect(trace.sessions[1]!.prompts[0]).not.toContain(`- ${fixed.fingerprint} at`);
+    expect(trace.replies).toEqual([
+      { commentId: 12, text: `Fixed in ${sha.slice(0, 7)}.`, closing: false },
+      { commentId: 14, text: "Withdrawn: the value is validated upstream", closing: true },
+    ]);
+    expect(trace.closed).toEqual(["T4"]);
+    expect(trace.reviews.map((review) => review.map((own) => own.body.split("\n")[1]))).toEqual([["**[warning] warn finding** · slop-review"]]);
+    const last = trace.statuses.at(-1)!;
+    expect(last).toContain("### Open (4)\n- **[warning] Fixed one** `f.txt:1` · slop-review [thread](https://gh/t/1)\n- **[warning] Discussed one** `f.txt:1` · slop-review [thread](https://gh/t/2)\n- **[warning] Open one** `f.txt:1` · security-review [thread](https://gh/t/3)\n- `new` **[warning] warn finding** `f.txt:1` · slop-review [thread](https://r/review)");
+    expect(last).toContain("### Resolved since last push (1)\n- ~~Wrong one~~ `f.txt` [thread](https://gh/t/4)");
+
+    const suppressed = fakes({ "slop-review": [judged, judged], "security-review": [security] }, pr, { threads: [{ ...wontFix, fingerprint: fingerprintOf("f.txt", "warn finding") }] });
+    await runJob({ owner: "o", repo: "r", pr: 1, trigger: "pull_request", reviews: [] }, { gh: suppressed.gh, backend: suppressed.backend, settings: settings({ reviews: ["slop-review", "security-review"], shriken: false }), reviews, cwd: dir, log: () => {} });
+    expect(suppressed.trace.reviews).toEqual([]);
+    expect(suppressed.trace.statuses.at(-1)).not.toContain("### Open");
+
+    const denied = fakes({ "slop-review": [judged, judged], "security-review": [security] }, pr, { threads: [fixed, wrong], closeFails: true });
+    const logs: string[] = [];
+    await runJob({ owner: "o", repo: "r", pr: 1, trigger: "pull_request", reviews: [] }, { gh: denied.gh, backend: denied.backend, settings: settings({ reviews: ["slop-review", "security-review"], shriken: false }), reviews, cwd: dir, log: (line) => logs.push(line) });
+    expect(denied.trace.closed).toEqual([]);
+    expect(denied.trace.replies.map((reply) => reply.commentId)).toEqual([11, 14]);
+    expect(logs).toContain("could not close the thread at f.txt: Resource not accessible by integration");
+    expect(denied.trace.statuses.at(-1)).toContain("### Open (3)\n- **[warning] Fixed one** `f.txt:1` · slop-review [thread](https://gh/t/1)\n- **[warning] Wrong one** `f.txt:1` · slop-review [thread](https://gh/t/4)\n- `new` **[warning] warn finding**");
+    expect(denied.trace.statuses.at(-1)).not.toContain("Resolved since");
+  });
+
+  test("a push whose diff has the patch id of the reviewed one gets a note on the card and copied checks, and no review runs", async () => {
+    const { dir, sha } = await repoAtHead();
+    const pr = prAt(dir, sha);
+    const previous = `${PATCH_MARKER} ${patchId(pr.diff)} 0000000aaaaaaa -->\n\n## Shrike · warnings\n\n${DECISION_MARKER}\nHold it.\n\n| Review | Score | Result | |\n\n### Open (1)\n- old`;
+    const { trace, backend, gh } = fakes({ "code-review": [report("pass")], shriken }, pr, { previous });
+    const logs: string[] = [];
+    const runs = await runJob({ owner: "o", repo: "r", pr: 1, trigger: "pull_request", reviews: [] }, { gh, backend, settings: settings({ reviews: ["code-review"] }), reviews, cwd: dir, log: (line) => logs.push(line) });
+    expect(runs).toEqual([]);
+    expect(trace.sessions).toEqual([]);
+    expect(trace.checks).toEqual([]);
+    expect(trace.copied).toEqual(["0000000aaaaaaa"]);
+    expect(trace.statuses).toEqual([`${PATCH_MARKER} ${patchId(pr.diff)} 0000000aaaaaaa -->\n\n## Shrike · warnings\n\n> Same changes as 0000000 at ${sha.slice(0, 7)}, nothing new to review.\n\n${DECISION_MARKER}\nHold it.\n\n| Review | Score | Result | |\n\n### Open (1)\n- old`]);
+    expect(logs).toContain("same diff as 0000000, skipped the reviews and copied 1 check(s)");
+
+    const again = fakes({ "code-review": [report("pass")], shriken }, pr, { previous: trace.statuses[0] });
+    await runJob({ owner: "o", repo: "r", pr: 1, trigger: "pull_request", reviews: [] }, { gh: again.gh, backend: again.backend, settings: settings({ reviews: ["code-review"] }), reviews, cwd: dir, log: () => {} });
+    expect(again.trace.statuses[0]!.split("Same changes as")).toHaveLength(2);
+
+    const asked = fakes({ "code-review": [report("pass")], shriken }, pr, { previous });
+    const ran = await runJob({ owner: "o", repo: "r", pr: 1, trigger: "comment", reviews: ["code-review"] }, { gh: asked.gh, backend: asked.backend, settings: settings(), reviews, cwd: dir, log: () => {} });
+    expect(ran.map((r) => r.review)).toEqual(["code-review", "shriken"]);
+    expect(asked.trace.copied).toEqual([]);
+    expect(asked.trace.sessions[0]!.prompts[0]).toContain("Previous decision: Hold it.");
+    expect(asked.trace.statuses.at(-1)).toContain("<!-- shrike:decision -->\nNothing blocks the merge.");
+
+    const sameHead = fakes({ "code-review": [report("pass")] }, pr, { previous: `${PATCH_MARKER} ${patchId(pr.diff)} ${sha} -->\n\n## Shrike · pass` });
+    const rerun = await runJob({ owner: "o", repo: "r", pr: 1, trigger: "pull_request", reviews: [] }, { gh: sameHead.gh, backend: sameHead.backend, settings: settings({ reviews: ["code-review"], shriken: false }), reviews, cwd: dir, log: () => {} });
+    expect(rerun.map((r) => r.review)).toEqual(["code-review"]);
+    const changed = fakes({ "code-review": [report("pass")] }, { ...pr, diff: `${pr.diff}+more\n` }, { previous });
+    expect((await runJob({ owner: "o", repo: "r", pr: 1, trigger: "pull_request", reviews: [] }, { gh: changed.gh, backend: changed.backend, settings: settings({ reviews: ["code-review"], shriken: false }), reviews, cwd: dir, log: () => {} })).map((r) => r.review)).toEqual(["code-review"]);
+  });
+
+  test("a review scoped to paths is skipped with a green check when no changed file matches, and runs when one does", async () => {
+    const { dir, sha } = await repoAtHead();
+    const pr = prAt(dir, sha);
+    const scoped: Review[] = [...reviews, { name: "react-doctor", description: "d", body: "Rules of react.", paths: ["**/*.tsx", "**/*.jsx"] }];
+    const { trace, backend, gh } = fakes({ "react-doctor": [report("warn"), report("warn")], "code-review": [report("pass")] }, pr);
+    const runs = await runJob({ owner: "o", repo: "r", pr: 1, trigger: "comment", reviews: ["react-doctor", "code-review"] }, { gh, backend, settings: settings({ shriken: false }), reviews: scoped, cwd: dir, log: () => {} });
+    expect(runs.map((r) => [r.review, r.status, r.report?.summary])).toEqual([
+      ["react-doctor", "done", "No changed file matches **/*.tsx, **/*.jsx, so this review did not run."],
+      ["code-review", "done", "pass summary"],
+    ]);
+    expect(trace.sessions).toHaveLength(1);
+    expect(trace.checks[0]).toEqual({ review: "react-doctor", conclusion: "success", title: "skipped: no matching files" });
+    expect(trace.statuses.at(-1)).toContain("| react-doctor |  | pass, 0 findings |  |");
+    const matching = fakes({ "react-doctor": [report("warn"), report("warn")] }, { ...pr, files: [{ path: "src/App.tsx", status: "modified", additions: 1, deletions: 0, lines: new Set([1]) }] });
+    const ran = await runJob({ owner: "o", repo: "r", pr: 1, trigger: "comment", reviews: ["react-doctor"] }, { gh: matching.gh, backend: matching.backend, settings: settings({ shriken: false }), reviews: scoped, cwd: dir, log: () => {} });
+    expect(ran[0]!.report?.verdict).toBe("warn");
+    expect(matching.trace.sessions).toHaveLength(1);
+  });
+
+  test("the parallel cap bounds the open sessions, and one is the whole cap for a shared session", async () => {
+    const { dir, sha } = await repoAtHead();
+    const pr = prAt(dir, sha);
+    const answers = { "code-review": [report("pass")], "slop-review": [report("pass")], "security-review": [report("pass")], "intent-review": [report("pass")], cleanup: [report("pass")] };
+    const capped = fakes(answers, pr);
+    await runJob({ owner: "o", repo: "r", pr: 1, trigger: "comment", reviews: Object.keys(answers) }, { gh: capped.gh, backend: capped.backend, settings: settings({ shriken: false }), reviews, cwd: dir, parallel: 2, log: () => {} });
+    expect(capped.trace.peak).toBe(2);
+    expect(capped.trace.sessions).toHaveLength(5);
+    const wide = fakes(answers, pr);
+    await runJob({ owner: "o", repo: "r", pr: 1, trigger: "comment", reviews: Object.keys(answers) }, { gh: wide.gh, backend: wide.backend, settings: settings({ shriken: false }), reviews, cwd: dir, log: () => {} });
+    expect(wide.trace.peak).toBe(3);
+    const one = fakes(answers, pr);
+    await runJob({ owner: "o", repo: "r", pr: 1, trigger: "comment", reviews: Object.keys(answers) }, { gh: one.gh, backend: one.backend, settings: settings({ shriken: false, session: "shared" }), reviews, cwd: dir, parallel: 4, log: () => {} });
+    expect(one.trace.peak).toBe(1);
+    expect(one.trace.sessions).toHaveLength(1);
   });
 
   test("shriken is skipped when no review produced a report", async () => {
@@ -262,7 +504,7 @@ describe("runJob", () => {
       ["missing-review", "error"],
     ]);
     expect(trace.checks.map((c) => c.review)).toEqual(["code-review"]);
-    expect(trace.comments).toEqual([]);
+    expect(trace.statuses.at(-1)).toContain("## Shrike · incomplete");
     expect(trace.histories).toBe(0);
   });
 
@@ -277,7 +519,7 @@ describe("runJob", () => {
       ["shriken", "done", undefined],
     ]);
     expect(trace.checks.map((c) => c.review)).toEqual(["cleanup", "shriken"]);
-    expect(trace.statuses[0]).toContain("| shriken | error | shriken runs after the reviews, not as one |");
+    expect(trace.statuses[0]).toContain("| shriken |  | shriken runs after the reviews, not as one |");
     const configured = await runJob(
       { owner: "o", repo: "r", pr: 1, trigger: "pull_request", reviews: [] },
       { gh, backend, settings: settings({ reviews: ["shriken"] }), reviews, cwd: dir, log: () => {} },
@@ -285,10 +527,10 @@ describe("runJob", () => {
     expect(configured.map((r) => [r.review, r.status])).toEqual([["shriken", "error"]]);
   });
 
-  test("shriken retries once for the markdown fence and a failure is recorded without touching the reviews", async () => {
+  test("shriken retries once for the markdown fence, writes the decision on the card, and a failure is recorded without touching the reviews", async () => {
     const { dir, sha } = await repoAtHead();
     const pr = prAt(dir, sha);
-    const retried = fakes({ "code-review": [report("warn")], shriken: ["", `\`\`\`markdown\n${SUMMARY}\n\`\`\`\n${SCORES}`] }, pr);
+    const retried = fakes({ "code-review": [report("warn"), report("warn")], shriken: ["", `\`\`\`markdown\n${SUMMARY}\n\`\`\`\n${SCORES}`] }, pr);
     const runs = await runJob(
       { owner: "o", repo: "r", pr: 1, trigger: "comment", reviews: ["code-review"] },
       { gh: retried.gh, backend: retried.backend, settings: settings(), reviews, cwd: dir, log: () => {} },
@@ -300,8 +542,9 @@ describe("runJob", () => {
     expect(retried.trace.sessions[1]!.prompts).toHaveLength(2);
     expect(retried.trace.sessions[1]!.prompts[1]).toMatch(/did not contain a valid summary.*```markdown.*reference token.*```json/);
     expect(runs[1]!.transcript!.map((turn) => turn.role)).toEqual(["prompt", "reply", "prompt", "reply"]);
+    expect(retried.trace.statuses.at(-1)).toContain("## Shrike · warnings\n\n<!-- shrike:decision -->\nNothing blocks the merge.\n\n| Review | Score | Result | |\n| --- | --- | --- | --- |\n| code-review | 70 | warn, 1 finding | [review](https://r/review) |");
     const unscored = fakes(
-      { "code-review": [report("warn")], shriken: [`\`\`\`markdown\n${SUMMARY}\n\`\`\``, `\`\`\`markdown\n${SUMMARY}\n\`\`\`\n\`\`\`json\n{"scores": {"slop-review": 3}}\n\`\`\``] },
+      { "code-review": [report("warn"), report("warn")], shriken: [`\`\`\`markdown\n${SUMMARY}\n\`\`\``, `\`\`\`markdown\n${SUMMARY}\n\`\`\`\n\`\`\`json\n{"scores": {"slop-review": 3}}\n\`\`\``] },
       pr,
     );
     const unscoredRuns = await runJob(
@@ -328,8 +571,7 @@ describe("runJob", () => {
       ["code-review", "success"],
       ["shriken", "failure"],
     ]);
-    expect(failed.trace.comments).toEqual([]);
-    expect(failed.trace.statuses.at(-1)).toContain("| shriken | error | no markdown document found |  |");
+    expect(failed.trace.statuses.at(-1)).toContain("| shriken |  | no markdown document found |  |");
     expect(seen).toEqual([
       ["code-review", "done"],
       ["shriken", "error"],
@@ -359,8 +601,7 @@ describe("runJob", () => {
       ["code-review", "success"],
       ["shriken", "failure"],
     ]);
-    expect(refused.trace.comments).toEqual([]);
-    expect(refused.trace.statuses.at(-1)).toContain("| shriken | error | summary carries no references |  |");
+    expect(refused.trace.statuses.at(-1)).toContain("| shriken |  | summary carries no references |  |");
     expect(seen).toEqual([
       ["code-review", "done"],
       ["shriken", "error"],
@@ -383,7 +624,6 @@ describe("runJob", () => {
       ["shriken", SUMMARY],
     ]);
     expect(recovered.trace.checks.at(-1)).toEqual({ review: "shriken", conclusion: "neutral", title: "summary written" });
-    expect(recovered.trace.comments).toEqual([]);
   });
 
   test("shared session keeps one conversation, sends the diff only once and hosts shriken", async () => {
@@ -411,13 +651,12 @@ describe("runJob", () => {
     expect(prompts[2]).toContain("# Review: security-review");
     expect(prompts[3]).toStartWith("You are Shriken");
     expect(trace.sessions[0]!.closed).toBe(true);
-    expect(trace.comments).toEqual([]);
   });
 
   test("shared session is dropped after a failure and reopened with full context", async () => {
     const { dir, sha } = await repoAtHead();
     const pr = prAt(dir, sha);
-    const { trace, backend, gh } = fakes({ "code-review": [report("warn")], "slop-review": ["garbage", "more garbage"], "security-review": [report("pass")], shriken }, pr);
+    const { trace, backend, gh } = fakes({ "code-review": [report("warn"), report("warn")], "slop-review": ["garbage", "more garbage"], "security-review": [report("pass")], shriken }, pr);
     const runs = await runJob(
       { owner: "o", repo: "r", pr: 1, trigger: "pull_request", reviews: [] },
       { gh, backend, settings: settings({ session: "shared", reviews: THREE }), reviews, cwd: dir, log: () => {} },
@@ -430,8 +669,9 @@ describe("runJob", () => {
     ]);
     expect(trace.sessions).toHaveLength(2);
     expect(trace.sessions[0]!.prompts).toHaveLength(2);
-    expect(trace.sessions[1]!.prompts).toHaveLength(3);
+    expect(trace.sessions[1]!.prompts).toHaveLength(4);
     expect(trace.sessions[1]!.prompts[0]).toContain("# Diff");
+    expect(trace.sessions[1]!.prompts[1]).toBe(VERIFY_PROMPT);
     expect(trace.sessions.every((s) => s.closed)).toBe(true);
   });
 
@@ -483,28 +723,6 @@ describe("runJob", () => {
   });
 });
 
-test("renderStatus shows result and error columns", () => {
-  const runs: ReviewRun[] = [
-    {
-      review: "a",
-      backend: "b",
-      model: "m",
-      status: "done",
-      report: { summary: "s", verdict: "warn", findings: [{ path: "p", line: 1, severity: "warning", title: "t", body: "b" }] },
-      posted: { id: 1, url: "u" },
-    },
-    { review: "c", backend: "b", model: "m", status: "error", error: "boom" },
-    { review: "d", backend: "b", model: "m", status: "running" },
-    { review: "shriken", backend: "b", model: "m", status: "done", report: { summary: "the paragraphs [review:a]", verdict: "warn", findings: [] } },
-  ];
-  const body = renderStatus(runs);
-  expect(body).toContain("| a | done | warn, 1 finding(s) | [review](u) |");
-  expect(body).toContain("| c | error | boom |  |");
-  expect(body).toContain("| d | running |  |  |");
-  expect(body).toContain("| shriken | done | summary written |  |");
-  expect(body).not.toContain("the paragraphs");
-});
-
 describe("autofix", () => {
   const identity = { token: "tok", name: "shrike[bot]", email: "7+shrike[bot]@users.noreply.github.com" };
   const fixed = ["Here:\n```markdown\nMake the test expect two\n\nThe assertion counted the header line.\n```"];
@@ -527,7 +745,7 @@ describe("autofix", () => {
   test("all mode waits for the checks, hands failures and findings to a writing session, then commits and pushes with the trailer", async () => {
     const { dir, sha, bare } = await withRemote();
     const pr = prAt(dir, sha);
-    const { trace, backend, gh } = fakes({ "code-review": [report("warn", [finding])], shriken, autofix: fixed }, pr, {
+    const { trace, backend, gh } = fakes({ "code-review": [report("warn", [finding]), report("warn", [finding])], shriken, autofix: fixed }, pr, {
       checks: [[{ ...failing(), status: "in_progress", conclusion: null }], [failing()]],
       onFix: (cwd) => writeFile(join(cwd, "a.txt"), "two\n"),
     });
@@ -570,13 +788,13 @@ describe("autofix", () => {
     expect(await readFile(join(dir, "a.txt"), "utf8")).toBe("two\n");
     expect(runs.at(-1)!.report!.summary).toBe(`Pushed ${pushed.slice(0, 7)}: Make the test expect two\n\nThe assertion counted the header line.`);
     expect(trace.checks.at(-1)).toEqual({ review: "autofix", conclusion: "success", title: `Pushed ${pushed.slice(0, 7)}: Make the test expect two` });
-    expect(trace.statuses.at(-1)).toContain(`| autofix | done | Pushed ${pushed.slice(0, 7)}: Make the test expect two |  |`);
+    expect(trace.statuses.at(-1)).toContain(`| autofix |  | Pushed ${pushed.slice(0, 7)}: Make the test expect two |  |`);
   });
 
   test("ci mode fixes nothing while a review is not green, and the setting off with no comment or trailer never runs", async () => {
     const { dir, sha, bare } = await withRemote();
     const pr = prAt(dir, sha);
-    const { trace, backend, gh } = fakes({ "code-review": [report("warn", [finding])], shriken, autofix: fixed }, pr, { checks: [[failing()]] });
+    const { trace, backend, gh } = fakes({ "code-review": [report("warn", [finding]), report("warn", [finding])], shriken, autofix: fixed }, pr, { checks: [[failing()]] });
     const runs = await runJob(
       { owner: "o", repo: "r", pr: 1, trigger: "pull_request", reviews: ["code-review"] },
       { gh, backend, settings: settings({ autofix: "ci" }), reviews, cwd: dir, log: () => {}, autofix: autofix(bare) },
@@ -609,7 +827,7 @@ describe("autofix", () => {
     await git(dir, ["add", "-A"]);
     await git(dir, ["-c", "user.name=b", "-c", "user.email=b@b", "commit", "-q", "-m", "Shrike autofix: earlier", "-m", "Shrike-Autofix: all"]);
     const head = await git(dir, ["rev-parse", "HEAD"]);
-    const carried = fakes({ "code-review": [report("warn", [finding])], shriken, autofix: fixed }, prAt(dir, head), { checks: [[green()]], onFix: (cwd) => writeFile(join(cwd, "a.txt"), "three\n") });
+    const carried = fakes({ "code-review": [report("warn", [finding]), report("warn", [finding])], shriken, autofix: fixed }, prAt(dir, head), { checks: [[green()]], onFix: (cwd) => writeFile(join(cwd, "a.txt"), "three\n") });
     const next = await runJob(
       { owner: "o", repo: "r", pr: 1, trigger: "pull_request", reviews: ["code-review"] },
       { gh: carried.gh, backend: carried.backend, settings: settings(), reviews, cwd: dir, log: () => {}, autofix: autofix(bare) },
@@ -781,17 +999,18 @@ describe("capture", () => {
       findings: [],
       capture: { shots: [{ name: "home", path: "/", before: url("before-home.png"), after: url("after-home.png") }], videos: { before: url("before.webm"), after: url("after.webm") } },
     });
-    expect(runs[1]!.posted).toEqual({ id: 2, url: `https://c/${CAPTURE_MARKER}` });
-    expect(trace.comments).toHaveLength(1);
-    expect(trace.comments[0]).toStartWith(`${CAPTURE_MARKER}\n## Shrike · before and after`);
-    expect(trace.comments[0]).toContain(`<img src="${url("before-home.png")}" alt="before home" width="360">`);
-    expect(trace.comments[0]).toContain(`Video: [before](${url("before.webm")}), [after](${url("after.webm")})`);
+    expect(runs[1]!.posted).toEqual({ id: 2, url: `https://c/${STATUS_MARKER}` });
+    const folded = trace.statuses.at(-1)!;
+    expect(folded).toContain("<details><summary>Before and after</summary>\n\n| Page | Before | After |");
+    expect(folded).toContain(`<img src="${url("before-home.png")}" alt="before home" width="360">`);
+    expect(folded).toContain(`Video: [before](${url("before.webm")}), [after](${url("after.webm")})`);
+    expect(folded).not.toContain("## Shrike · before and after");
     expect(trace.checks.map((c) => [c.review, c.conclusion, c.title])).toEqual([
-      ["code-review", "success", "pass: 0 finding(s)"],
+      ["code-review", "success", "pass: no findings"],
       ["capture", "success", "1 page captured before and after"],
       ["shriken", "neutral", "summary written"],
     ]);
-    expect(trace.statuses.at(-1)).toContain("| capture | done | 1 page captured before and after | [review](https://c/<!-- shrike:capture -->) |");
+    expect(trace.statuses.at(-1)).toContain("| capture |  | 1 page captured before and after |  |");
     const shrikenPrompt = trace.sessions[2]!.prompts[0]!;
     expect(shrikenPrompt).toContain(`# Screenshots Shrike took before and after the change\n- alt: before home, url: ${url("before-home.png")}\n- alt: after home, url: ${url("after-home.png")}\n`);
     expect(shrikenPrompt).not.toContain("## Review: capture");
@@ -821,7 +1040,7 @@ describe("capture", () => {
     expect(runs[1]!.report).toEqual({ summary: "Nothing a browser shows changes in this pull request.", verdict: "pass", findings: [], capture: { shots: [], videos: {} } });
     expect(nothing.trace.sessions[1]!.prompts).toHaveLength(1);
     expect(nothing.trace.published).toEqual([]);
-    expect(nothing.trace.comments).toEqual([]);
+    expect(nothing.trace.statuses.at(-1)).not.toContain("Before and after");
     expect(nothing.trace.sessions[2]!.prompts[0]).toContain("# Screenshots Shrike took before and after the change\n(none)");
 
     const at = port();
@@ -842,7 +1061,7 @@ describe("capture", () => {
     expect(again[1]!.report?.summary).toBe("0 pages captured before and after, 1 incomplete");
     expect(again[1]!.report?.capture).toEqual({ shots: [{ name: "home", path: "/", after: mediaUrl(pr, "feedfacefeedface", "after-home.png") }], videos: { after: mediaUrl(pr, "feedfacefeedface", "after.webm") } });
     expect(partial.trace.published[0]!.files.map((f) => f.path)).toEqual([`pr-1/${head.slice(0, 7)}/after-home.png`, `pr-1/${head.slice(0, 7)}/after.webm`]);
-    expect(partial.trace.comments[0]).toContain("| **home** `/` | not taken | <a href=");
+    expect(partial.trace.statuses.at(-1)).toContain("| **home** `/` | not taken | <a href=");
     expect(partial.trace.checks[1]).toEqual({ review: "capture", conclusion: "neutral", title: "0 pages captured before and after, 1 incomplete" });
     expect(partial.trace.sessions[0]!.prompts.at(-1)).toContain(`# Screenshots Shrike took before and after the change\n- alt: after home, url: ${mediaUrl(pr, "feedfacefeedface", "after-home.png")}\n`);
   }, 60_000);
@@ -873,7 +1092,7 @@ describe("capture", () => {
       ["code-review", "done", undefined],
       ["shriken", "done", undefined],
     ]);
-    expect(refused.trace.statuses[0]).toContain("| capture | error | capture runs after the reviews, not as one |");
+    expect(refused.trace.statuses[0]).toContain("| capture |  | capture runs after the reviews, not as one |");
 
     const skipped = fakes({ "code-review": [report("pass")], shriken }, pr);
     const lines: string[] = [];

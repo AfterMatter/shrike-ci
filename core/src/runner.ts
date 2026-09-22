@@ -1,17 +1,20 @@
-// Runs a job: the requested reviews in order, fresh or shared session, the
-// capture, the Shriken summary, then autofix when on. Posts status after each step.
+// Runs a job: the reviews in parallel fresh sessions or one shared session,
+// the thread lifecycle, the capture, Shriken, then autofix. Keeps one card current.
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { attemptsAtHead, AUTOFIX, commitAndPush, headMessages, modeOf, problemsOf, reviewsGreen, waitForChecks, type AutofixDeps } from "./autofix";
 import type { AgentSession, Backend } from "./backends";
-import { baseWorktree, CAPTURE, CAPTURE_MARKER, captureHeadline, captureOf, collect, MEDIA_BRANCH, mediaPath, parsePlan, parseTaken, renderCapture, serve, type CaptureDeps, type Side } from "./capture";
+import { baseWorktree, CAPTURE, captureHeadline, captureOf, collect, MEDIA_BRANCH, mediaPath, parsePlan, parseTaken, renderCapture, serve, type CaptureDeps, type Side } from "./capture";
+import { decisionIn, patchIn, plainDecision, renderCard, type Card, type OpenItem } from "./card";
 import { ensureCheckout } from "./checkout";
-import { conclusionOf, headline, STATUS_MARKER, type CheckHandle, type MediaFile, type PullRequest, type PullRequestClient } from "./github";
+import { globMatches, patchId } from "./diff";
+import { conclusionOf, headline, splitFlagged, STATUS_MARKER, type CheckHandle, type MediaFile, type PullRequest, type PullRequestClient } from "./github";
 import type { Job } from "./job";
-import { ASK, askReview, AUTOFIX_RETRY_PROMPT, buildAutofixPrompt, buildCapturePlanPrompt, buildCaptureShotsPrompt, buildPrompt, buildShrikenPrompt, CAPTURE_PLAN_RETRY_PROMPT, CAPTURE_TAKEN_RETRY_PROMPT, RETRY_PROMPT, SHRIKEN_RETRY_PROMPT } from "./prompt";
-import { parseReport, parseShriken, parseShrikenScores, shrikenReferences, type Capture, type Report } from "./report";
+import { ASK, askReview, AUTOFIX_RETRY_PROMPT, buildAutofixPrompt, buildCapturePlanPrompt, buildCaptureShotsPrompt, buildPrompt, buildShrikenPrompt, CAPTURE_PLAN_RETRY_PROMPT, CAPTURE_TAKEN_RETRY_PROMPT, RETRY_PROMPT, SHRIKEN_RETRY_PROMPT, VERIFY_PROMPT } from "./prompt";
+import { parseReport, parseShriken, parseShrikenScores, shrikenReferences, topFinding, type Capture, type Judgement, type Report } from "./report";
 import type { AutofixMode, Review, Settings } from "./settings";
+import { flag, judge, lineReader, renderThread, type Flagged, type Thread } from "./threads";
 
 export interface Turn {
   role: "prompt" | "reply" | "tool";
@@ -56,6 +59,8 @@ export interface RunDeps {
   reviews: Review[];
   cwd: string;
   token?: string;
+  site?: string;
+  parallel?: number;
   log: (line: string) => void;
   onRun?: (run: ReviewRun, pr: PullRequest) => Promise<void>;
   autofix?: AutofixDeps;
@@ -66,6 +71,7 @@ type Opened = { session: AgentSession; followUp: boolean };
 type OpenOptions = { write?: boolean; captureDir?: string };
 
 export const SHRIKEN = "shriken";
+export const PARALLEL = 3;
 const RESERVED: Record<string, string> = {
   [SHRIKEN]: "shriken runs after the reviews, not as one",
   [CAPTURE]: "capture runs after the reviews, not as one",
@@ -75,6 +81,7 @@ const RESERVED: Record<string, string> = {
 const OWN = new Set([SHRIKEN, CAPTURE, AUTOFIX]);
 const PROMPT_KEEP = 20_000;
 const RANK: Record<Report["verdict"], number> = { pass: 0, warn: 1, fail: 2 };
+const SEVERITY: Record<OpenItem["severity"], number> = { info: 0, warning: 1, error: 2 };
 
 export const runRecord = (job: Job, run: ReviewRun, pr: PullRequest): RunRecord => ({
   pr: pr.number,
@@ -93,14 +100,24 @@ export const runRecord = (job: Job, run: ReviewRun, pr: PullRequest): RunRecord 
   transcript: run.transcript ?? [],
 });
 
+export const checkTitle = (report: Report): string => {
+  const top = topFinding(report.findings);
+  return top ? `${report.verdict}: ${top.title}` : "pass: no findings";
+};
+
+export const skipNote = (body: string, note: string): string => body.replace(/^> Same changes as [^\n]*\n\n/m, "").replace(/^(## Shrike[^\n]*)/m, `$1\n\n> ${note}`);
+
 const said = (run: ReviewRun, role: Turn["role"], text: string) => (run.transcript ??= []).push({ role, text: role === "prompt" && text.length > PROMPT_KEEP ? `${text.slice(0, PROMPT_KEEP)}\n(prompt cut after ${PROMPT_KEEP} characters)` : text });
 
-export function renderStatus(runs: ReviewRun[]): string {
-  const rows = runs.map((run) => {
-    const result = run.status !== "done" || !run.report ? run.error ?? "" : run.review === SHRIKEN ? "summary written" : run.review === AUTOFIX || run.review === CAPTURE ? headline(run.report.summary) : `${run.report.verdict}, ${run.report.findings.length} finding(s)`;
-    return `| ${run.review} | ${run.status} | ${result} | ${run.posted ? `[${run.review === SHRIKEN ? "summary" : "review"}](${run.posted.url})` : ""} |`;
-  });
-  return `## Shrike\n\n| Review | Status | Result | |\n| --- | --- | --- | --- |\n${rows.join("\n")}`;
+const item = (thread: Thread): OpenItem => ({ severity: thread.severity, title: thread.title, path: thread.path, line: thread.line, skills: thread.skills, url: thread.url, fresh: false });
+
+const fresh = ({ finding, skills }: Flagged, url?: string): OpenItem => ({ severity: finding.severity, title: finding.title, path: finding.path, line: finding.line, skills, url, fresh: true });
+
+async function limited<T>(items: T[], cap: number, work: (item: T) => Promise<void>): Promise<void> {
+  const queue = [...items];
+  await Promise.all(Array.from({ length: Math.max(1, Math.min(cap, queue.length)) }, async () => {
+    for (let next = queue.shift(); next !== undefined; next = queue.shift()) await work(next);
+  }));
 }
 
 async function ask<T>(run: ReviewRun, session: AgentSession, prompt: string, retry: string, parse: (text: string) => T, log: (line: string) => void): Promise<T> {
@@ -124,38 +141,57 @@ export async function runJob(job: Job, deps: RunDeps): Promise<ReviewRun[]> {
   const pr = await deps.gh.load(job);
   await ensureCheckout({ dir: deps.cwd, cloneUrl: pr.cloneUrl, pr: pr.number, headSha: pr.headSha, token: deps.token }, deps.log);
   const model = deps.settings.model ?? deps.backend.defaultModel;
+  const threads = await deps.gh.threads(pr).catch((error) => (deps.log(`could not read the review threads: ${error instanceof Error ? error.message : String(error)}`), [] as Thread[]));
+  const open = threads.filter((thread) => !thread.resolved);
+  const wontFix = threads.filter((thread) => thread.resolved && !thread.closedByShrike);
+  const inThread = job.replyTo === undefined ? undefined : threads.find((thread) => thread.commentId === job.replyTo || thread.replies.some((reply) => reply.id === job.replyTo));
   const asked = job.prompt !== undefined && (!job.reviews.length || job.reviews.some((name) => !deps.reviews.some((review) => review.name === name)));
   const reviews = asked
-    ? new Map([[ASK, askReview(job.prompt!)]])
+    ? new Map([[ASK, askReview(job.prompt!, inThread)]])
     : new Map((job.reviews.length ? job.reviews : deps.settings.reviews).map((name) => [name, deps.reviews.find((review) => review.name === name)]));
   const runs: ReviewRun[] = [...reviews].map(([review, loaded]) => {
     const error = asked ? undefined : RESERVED[review] ?? (loaded ? undefined : "unknown review");
     return { review, backend: deps.backend.name, model, status: error ? "error" : "queued", ...(error ? { error } : {}) };
   });
-  const status = await deps.gh.stickyComment(pr, STATUS_MARKER, renderStatus(runs));
-  let shared: AgentSession | undefined;
-  let current: ReviewRun | undefined;
-  const heard = (line: string) => {
-    if (line.startsWith("tool ") && current) said(current, "tool", line);
-    deps.log(`[${current?.review ?? "?"}] ${line}`);
+  const card: Card = { patch: { id: patchId(pr.diff), sha: pr.headSha }, site: deps.site ? `${deps.site.replace(/\/$/, "")}/#/${pr.owner}/${pr.repo}/pull/${pr.number}` : undefined };
+  const reviewedAt = (previous: string | null) => {
+    const before = patchIn(previous);
+    return job.trigger === "pull_request" && before?.id === card.patch!.id && before.sha !== pr.headSha ? before.sha : null;
   };
-  const open = async (run: ReviewRun, { write = false, captureDir }: OpenOptions): Promise<Opened> => {
-    current = run;
-    if (write || captureDir || deps.settings.session !== "shared") return { session: await deps.backend.open({ cwd: deps.cwd, model, write, captureDir, log: heard }), followUp: false };
+  const status = await deps.gh.stickyComment(pr, STATUS_MARKER, (previous) => {
+    const sha = reviewedAt(previous);
+    return sha ? skipNote(previous!, `Same changes as ${sha.slice(0, 7)} at ${pr.headSha.slice(0, 7)}, nothing new to review.`) : renderCard(runs, card);
+  });
+  const same = reviewedAt(status.previous);
+  if (same) {
+    const copied = await deps.gh.copyChecks(pr, same).catch((error) => (deps.log(`could not copy the checks: ${error instanceof Error ? error.message : String(error)}`), []));
+    deps.log(`same diff as ${same.slice(0, 7)}, skipped the reviews and copied ${copied.length} check(s)`);
+    return [];
+  }
+  const previous = decisionIn(status.previous);
+  let chain = Promise.resolve();
+  const post = () => (chain = chain.then(() => status.update(renderCard(runs, card))).catch((error) => deps.log(`could not update the card: ${error instanceof Error ? error.message : String(error)}`)));
+  let shared: AgentSession | undefined;
+  const openFor = async (run: ReviewRun, { write = false, captureDir }: OpenOptions): Promise<Opened> => {
+    const log = (line: string) => {
+      if (line.startsWith("tool ")) said(run, "tool", line);
+      deps.log(`[${run.review}] ${line}`);
+    };
+    if (write || captureDir || deps.settings.session !== "shared") return { session: await deps.backend.open({ cwd: deps.cwd, model, write, captureDir, log }), followUp: false };
     const followUp = shared !== undefined;
-    shared ??= await deps.backend.open({ cwd: deps.cwd, model, log: heard });
+    shared ??= await deps.backend.open({ cwd: deps.cwd, model, log });
     return { session: shared, followUp };
   };
   const step = async (run: ReviewRun, work: (opened: (options?: OpenOptions) => Promise<Opened>, check: CheckHandle) => Promise<void>) => {
     run.status = "running";
     run.startedAt = new Date().toISOString();
     deps.log(`[${run.review}] starting with ${run.backend}/${run.model}${shared ? " in the shared session" : ""}`);
-    await status.update(renderStatus(runs));
+    await post();
     const check = await deps.gh.startCheck(pr, run.review);
     let session: AgentSession | undefined;
     try {
       await work(async (options = {}) => {
-        const opened = await open(run, options);
+        const opened = await openFor(run, options);
         session = opened.session;
         return opened;
       }, check);
@@ -170,8 +206,65 @@ export async function runJob(job: Job, deps: RunDeps): Promise<ReviewRun[]> {
       if (session && session !== shared) await session.close().catch(() => {});
     }
     run.finishedAt = new Date().toISOString();
-    await status.update(renderStatus(runs));
+    await post();
     await deps.onRun?.(run, pr).catch((error) => deps.log(`[${run.review}] could not report the run: ${error instanceof Error ? error.message : String(error)}`));
+  };
+  const judged: Judgement[][] = [];
+  const owned = (thread: Thread, review: string) => {
+    const owner = thread.skills.find((skill) => reviews.has(skill));
+    return owner === undefined || owner === review;
+  };
+  const review = (run: ReviewRun, loaded: Review) =>
+    step(run, async (opened, check) => {
+      if (loaded.paths?.length && !pr.files.some((file) => loaded.paths!.some((glob) => globMatches(glob, file.path)))) {
+        run.report = { summary: `No changed file matches ${loaded.paths.join(", ")}, so this review did not run.`, verdict: "pass", findings: [] };
+        return check.finish("success", "skipped: no matching files", run.report.summary);
+      }
+      const { session, followUp } = await opened();
+      const mine = run.review === ASK ? [] : open.filter((thread) => owned(thread, run.review));
+      const first = await ask(run, session, buildPrompt(loaded, pr, { threads: mine, wontFix, previous, followUp }), RETRY_PROMPT, parseReport, deps.log);
+      run.report = first.findings.length ? await ask(run, session, VERIFY_PROMPT, RETRY_PROMPT, parseReport, deps.log) : first;
+      if (mine.length) judged.push(run.report.threads ?? first.threads ?? []);
+      if (job.replyTo !== undefined && run.review === ASK) run.posted = { id: job.replyTo, url: await deps.gh.reply(pr, job.replyTo, run.report.summary) };
+      await check.finish(conclusionOf(run.report), checkTitle(run.report), run.report.summary);
+    });
+  const lifecycle = async () => {
+    const reported = job.replyTo === undefined ? runs.flatMap((run) => (run.report && !OWN.has(run.review) ? [{ review: run.review, findings: run.report.findings }] : [])) : [];
+    const flagged = await flag(reported, lineReader(deps.cwd));
+    const known = new Set([...open, ...wontFix].map((thread) => thread.fingerprint));
+    const { inline, outside } = splitFlagged(flagged.filter((own) => own.finding.severity !== "info" && !known.has(own.fingerprint)), pr.files);
+    let posted: ReviewRun["posted"];
+    if (inline.length) {
+      posted = await deps.gh.postReview(pr, inline.map(({ finding, ...own }) => ({ path: finding.path, line: finding.line, startLine: finding.startLine, body: renderThread({ ...own, finding }) })));
+      for (const run of runs) if (inline.some((own) => own.skills.includes(run.review))) run.posted = posted;
+      deps.log(`posted ${inline.length} new thread(s)`);
+    }
+    const judgements = judge(judged);
+    const still: OpenItem[] = [];
+    card.resolved = [];
+    for (const thread of open) {
+      const judgement = judgements.get(thread.fingerprint);
+      if (!judgement || judgement.state === "open") {
+        still.push(item(thread));
+        continue;
+      }
+      const text = judgement.state === "fixed" ? `Fixed in ${pr.headSha.slice(0, 7)}${judgement.reason ? `: ${judgement.reason}` : "."}` : `Withdrawn${judgement.reason ? `: ${judgement.reason}` : ", the finding did not hold."}`;
+      try {
+        await deps.gh.reply(pr, thread.commentId, text, !thread.replies.length);
+        if (thread.replies.length) {
+          still.push(item(thread));
+          continue;
+        }
+        deps.log(`${judgement.state}: ${thread.path} ${thread.title}, ${await deps.gh.close(thread)}`);
+        card.resolved.push({ title: thread.title, path: thread.path, url: thread.url });
+      } catch (error) {
+        deps.log(`could not close the thread at ${thread.path}: ${error instanceof Error ? error.message : String(error)}`);
+        still.push(item(thread));
+      }
+    }
+    card.open = [...still, ...inline.map((own) => fresh(own, posted?.url)), ...outside.map((own) => fresh(own))].sort((a, b) => SEVERITY[b.severity] - SEVERITY[a.severity]);
+    card.nits = flagged.filter((own) => own.finding.severity === "info").map(({ finding, skills }) => ({ finding, skills }));
+    await post();
   };
   const capture = async () => {
     const run: ReviewRun = { review: CAPTURE, backend: deps.backend.name, model, status: "queued" };
@@ -209,8 +302,8 @@ export async function runJob(job: Job, deps: RunDeps): Promise<ReviewRun[]> {
         const sha = await deps.gh.publish(pr, MEDIA_BRANCH, files.map((file) => ({ ...file, path: mediaPath(pr, file.path) })), `Shrike capture of #${pr.number} at ${pr.headSha.slice(0, 7)}`, await deps.capture!.identity());
         const taken = captureOf(pr, sha, shots, files);
         deps.log(`[capture] published ${files.length} file(s) to ${MEDIA_BRANCH} as ${sha.slice(0, 7)}`);
-        const { id, url: link } = await deps.gh.stickyComment(pr, CAPTURE_MARKER, renderCapture(pr, taken));
-        run.posted = { id, url: link };
+        card.capture = renderCapture(pr, taken);
+        run.posted = { id: status.id, url: status.url };
         await done(captureHeadline(taken), taken.shots.every((shot) => shot.before && shot.after) ? "pass" : "warn", taken);
       } finally {
         await rm(outputDir, { recursive: true, force: true }).catch(() => {});
@@ -243,16 +336,12 @@ export async function runJob(job: Job, deps: RunDeps): Promise<ReviewRun[]> {
     });
   };
   try {
-    for (const run of runs) {
-      const review = reviews.get(run.review);
-      if (!review || run.status === "error") continue;
-      await step(run, async (opened, check) => {
-        const { session, followUp } = await opened();
-        run.report = await ask(run, session, buildPrompt(review, pr, followUp), RETRY_PROMPT, parseReport, deps.log);
-        run.posted = await deps.gh.postReview(pr, run.review, run.report);
-        await check.finish(conclusionOf(run.report), `${run.report.verdict}: ${run.report.findings.length} finding(s)`, run.report.summary);
-      });
-    }
+    const pending = runs.flatMap((run) => {
+      const loaded = reviews.get(run.review);
+      return loaded && run.status !== "error" ? [{ run, loaded }] : [];
+    });
+    await limited(pending, deps.settings.session === "shared" ? 1 : deps.parallel ?? PARALLEL, ({ run, loaded }) => review(run, loaded));
+    await lifecycle();
     const verdicts = runs.flatMap((run) => (run.report ? [run.report.verdict] : []));
     if (deps.settings.capture) {
       if (deps.capture) await capture();
@@ -270,6 +359,7 @@ export async function runJob(job: Job, deps: RunDeps): Promise<ReviewRun[]> {
           return { summary: parsed, scores: parseShrikenScores(text, scored) };
         }, deps.log);
         run.report = { summary, verdict: verdicts.reduce((worst, verdict) => (RANK[verdict] > RANK[worst] ? verdict : worst), "pass"), findings: [], scores };
+        card.decision = plainDecision(summary);
         await check.finish("neutral", "summary written", summary);
       });
     }
@@ -278,6 +368,7 @@ export async function runJob(job: Job, deps: RunDeps): Promise<ReviewRun[]> {
     if (mode) await fix(mode, attemptsAtHead(messages));
   } finally {
     await shared?.close();
+    await chain;
   }
   return runs;
 }

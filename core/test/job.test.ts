@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { jobFromEvent, parseTrigger } from "../src/job";
+import { CHECK_ACTIONS, jobFromEvent, parseTrigger } from "../src/job";
 
 const repository = { id: 501, name: "shrike", owner: { login: "forloopcodes" } };
 const installation = { id: 77 };
@@ -97,5 +97,32 @@ describe("jobFromEvent", () => {
     expect(jobFromEvent("push", { repository })).toBeNull();
     expect(jobFromEvent("pull_request", { action: "opened", pull_request: { number: 1 } })).toBeNull();
     expect(() => jobFromEvent("pull_request", { action: "opened", repository: { name: "x", owner: { login: "y" } }, pull_request: { number: 1 } })).toThrow();
+  });
+});
+
+describe("threads and check actions", () => {
+  const comment = (body: string, id = 77) => jobFromEvent("pull_request_review_comment", { action: "created", repository, pull_request: { number: 9 }, comment: { id, body, author_association: "OWNER" } });
+
+  test("a question in a review thread carries the comment to answer under, a bare or named trigger does not", () => {
+    expect(comment("shrike why is this unsafe?")).toEqual({ owner: "forloopcodes", repo: "shrike", repositoryId: 501, installationId: undefined, pr: 9, trigger: "comment", reviews: [], prompt: "why is this unsafe?", replyTo: 77 });
+    expect(comment("shrike")).not.toHaveProperty("replyTo");
+    expect(comment("shrike cleanup")).toMatchObject({ reviews: ["cleanup"], prompt: "cleanup", replyTo: 77 });
+    expect(comment("shrike autofix")).not.toHaveProperty("replyTo");
+    expect(jobFromEvent("issue_comment", { action: "created", repository, issue: { number: 4, pull_request: {} }, comment: { id: 5, body: "shrike why?", author_association: "OWNER" } })).not.toHaveProperty("replyTo");
+  });
+
+  test("a requested check action maps onto the fix, re-run and ask jobs, only for Shrike's own checks", () => {
+    const action = (identifier: string, name = "shrike/code-review", pulls: { number: number }[] = [{ number: 3 }]) =>
+      jobFromEvent("check_run", { action: "requested_action", installation, repository, check_run: { name, pull_requests: pulls }, requested_action: { identifier } });
+    expect(action("fix")).toEqual({ owner: "forloopcodes", repo: "shrike", repositoryId: 501, installationId: 77, pr: 3, trigger: "action", reviews: [], autofix: "all" });
+    expect(action("rerun")).toEqual({ owner: "forloopcodes", repo: "shrike", repositoryId: 501, installationId: 77, pr: 3, trigger: "action", reviews: ["code-review"] });
+    expect(action("rerun", "shrike/shriken")).toMatchObject({ reviews: [] });
+    expect(action("ask")).toMatchObject({ reviews: [], prompt: "Explain the findings of the code-review review on this pull request and how to fix each one." });
+    expect(action("deploy")).toBeNull();
+    expect(action("fix", "ci/test")).toBeNull();
+    expect(action("fix", "shrike/code-review", [])).toBeNull();
+    expect(jobFromEvent("check_run", { action: "created", installation, repository, check_run: { name: "shrike/code-review", pull_requests: [{ number: 3 }] } })).toBeNull();
+    expect(CHECK_ACTIONS.map((own) => own.identifier)).toEqual(["fix", "rerun", "ask"]);
+    expect(CHECK_ACTIONS.every((own) => own.label.length <= 20 && own.description.length <= 40 && own.identifier.length <= 20)).toBe(true);
   });
 });

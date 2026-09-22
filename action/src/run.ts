@@ -40,6 +40,7 @@ const runs = await runJob(job, {
   reviews,
   cwd,
   token: identity.token,
+  site: apiUrl,
   log: (line) => console.log(line),
   onRun: (run, pr) => api.report(runRecord(job, run, pr)),
   autofix: { identity: () => api.installationToken(), ownRunId: env("GITHUB_RUN_ID") },

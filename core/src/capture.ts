@@ -36,7 +36,6 @@ const takenSchema = z.object({ taken: z.array(z.string()) });
 export type Shot = z.infer<typeof shotSchema>;
 
 export const CAPTURE = "capture";
-export const CAPTURE_MARKER = "<!-- shrike:capture -->";
 export const MEDIA_BRANCH = "shrike-media";
 export const SIDES: Side[] = ["before", "after"];
 export const START_MS = 3 * 60 * 1000;
@@ -123,7 +122,7 @@ export function renderCapture(pr: PullRequest, capture: Capture): string {
   const rows = capture.shots.map((shot) => `| **${shot.name}** \`${shot.path}\` | ${cell(shot.before, `before ${shot.name}`)} | ${cell(shot.after, `after ${shot.name}`)} |`);
   const videos = SIDES.flatMap((side) => (capture.videos[side] ? [`[${side}](${capture.videos[side]})`] : []));
   const note = pr.private ? "\n\nThe files live on the `shrike-media` branch of this private repository, so GitHub cannot show them inline here; the Shrike website does." : "";
-  return `## Shrike · before and after\n\n| Page | Before | After |\n| --- | --- | --- |\n${rows.join("\n")}${videos.length ? `\n\nVideo: ${videos.join(", ")}` : ""}${note}`;
+  return `| Page | Before | After |\n| --- | --- | --- |\n${rows.join("\n")}${videos.length ? `\n\nVideo: ${videos.join(", ")}` : ""}${note}`;
 }
 
 export const captureHeadline = (capture: Capture): string => {

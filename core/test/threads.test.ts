@@ -1,0 +1,73 @@
+import { describe, expect, test } from "bun:test";
+import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { Finding } from "../src/report";
+import { closedByShrike, fingerprintIn, fingerprintOf, flag, headOf, isHumanReply, judge, lineReader, renderThread, replyBody } from "../src/threads";
+
+const finding = (extra: Partial<Finding>): Finding => ({ path: "src/a.ts", line: 3, severity: "warning", title: "Wrong count", body: "Counts the header.", ...extra });
+
+describe("fingerprints", () => {
+  test("depend on the path and the whitespace-normalized line text, never on the line number", () => {
+    const at = fingerprintOf("src/a.ts", "  const total = rows.length;  ");
+    expect(at).toMatch(/^[0-9a-f]{16}$/);
+    expect(fingerprintOf("src/a.ts", "const total   =\trows.length;")).toBe(at);
+    expect(fingerprintOf("src/b.ts", "const total = rows.length;")).not.toBe(at);
+    expect(fingerprintOf("src/a.ts", "const total = rows.length - 1;")).not.toBe(at);
+  });
+
+  test("are read back from a thread body and only from a thread body", () => {
+    const body = renderThread({ fingerprint: "0123456789abcdef", skills: ["code-review"], finding: finding({}) });
+    expect(body).toStartWith("<!-- shrike:finding 0123456789abcdef -->\n**[warning] Wrong count** · code-review\n\nCounts the header.");
+    expect(fingerprintIn(body)).toBe("0123456789abcdef");
+    expect(fingerprintIn("**[warning] Wrong count**")).toBeNull();
+    expect(fingerprintIn("<!-- shrike:finding nope -->")).toBeNull();
+    expect(headOf(body)).toEqual({ severity: "warning", title: "Wrong count", skills: ["code-review"] });
+    expect(headOf(renderThread({ fingerprint: "0123456789abcdef", skills: ["a", "b"], finding: finding({ severity: "error", suggestion: "x" }) }))).toEqual({ severity: "error", title: "Wrong count", skills: ["a", "b"] });
+    expect(headOf("anything")).toEqual({ severity: "warning", title: "finding", skills: [] });
+    expect(renderThread({ fingerprint: "0123456789abcdef", skills: ["a"], finding: finding({ suggestion: "const x = 1;" }) })).toEndWith("```suggestion\nconst x = 1;\n```");
+  });
+
+  test("replies tell Shrike's own answers from a human's, and a closing reply marks a thread Shrike closed", () => {
+    expect(replyBody("Fixed in abc1234.", true)).toBe("<!-- shrike:reply closed -->\nFixed in abc1234.");
+    expect(replyBody("Here is why.")).toBe("<!-- shrike:reply -->\nHere is why.");
+    expect(isHumanReply("won't fix, this is intended")).toBe(true);
+    expect(isHumanReply(replyBody("x"))).toBe(false);
+    expect(closedByShrike(["thanks", replyBody("Fixed in abc1234.", true)])).toBe(true);
+    expect(closedByShrike(["thanks", replyBody("This is why.")])).toBe(false);
+    expect(closedByShrike([])).toBe(false);
+  });
+});
+
+describe("flag", () => {
+  test("keeps one entry per fingerprint across skills, naming every skill and keeping the worst severity, and survives a line shift", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "threads-"));
+    await mkdir(join(dir, "src"), { recursive: true });
+    await writeFile(join(dir, "src", "a.ts"), "one\ntwo\nconst total = rows.length;\n");
+    const first = await flag([{ review: "code-review", findings: [finding({ line: 3 })] }, { review: "security-review", findings: [finding({ line: 3, severity: "error", title: "Off by one" })] }], lineReader(dir));
+    expect(first).toHaveLength(1);
+    expect(first[0]!.skills).toEqual(["code-review", "security-review"]);
+    expect(first[0]!.finding.title).toBe("Off by one");
+    expect(first[0]!.fingerprint).toBe(fingerprintOf("src/a.ts", "const total = rows.length;"));
+    await writeFile(join(dir, "src", "a.ts"), "zero\none\ntwo\nconst total = rows.length;\n");
+    const shifted = await flag([{ review: "code-review", findings: [finding({ line: 4 })] }], lineReader(dir));
+    expect(shifted[0]!.fingerprint).toBe(first[0]!.fingerprint);
+    const missing = await flag([{ review: "code-review", findings: [finding({ path: "gone.ts", line: 9 })] }], lineReader(dir));
+    expect(missing[0]!.fingerprint).toBe(fingerprintOf("gone.ts", "Wrong count"));
+    expect(await flag([], lineReader(dir))).toEqual([]);
+  });
+});
+
+describe("judge", () => {
+  test("open wins over fixed, fixed wins over wrong, and the reason of the winner is kept", () => {
+    const verdicts = judge([
+      [{ fingerprint: "a", state: "fixed", reason: "renamed" }, { fingerprint: "b", state: "wrong" }],
+      [{ fingerprint: "a", state: "open", reason: "still counts the header" }, { fingerprint: "b", state: "fixed" }, { fingerprint: "c", state: "wrong", reason: "never held" }],
+    ]);
+    expect(verdicts.get("a")).toEqual({ fingerprint: "a", state: "open", reason: "still counts the header" });
+    expect(verdicts.get("b")).toEqual({ fingerprint: "b", state: "fixed" });
+    expect(verdicts.get("c")).toEqual({ fingerprint: "c", state: "wrong", reason: "never held" });
+    expect(verdicts.has("d")).toBe(false);
+    expect(judge([]).size).toBe(0);
+  });
+});
