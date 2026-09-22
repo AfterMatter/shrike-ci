@@ -393,11 +393,10 @@ describe("runJob", () => {
     expect(runs.map((r) => r.status)).toEqual(["done", "done"]);
     expect(trace.sessions[0]!.prompts[0]).toContain(`- ${fixed.fingerprint} at`);
     expect(trace.sessions[0]!.prompts[0]).toContain(`- ${discussed.fingerprint} at \`f.txt:1\` [warning] Discussed one (slop-review)\n  bob replied: is this really a problem?`);
-    expect(trace.sessions[0]!.prompts[0]).not.toContain(`- ${open.fingerprint} at`);
+    expect(trace.sessions[0]!.prompts[0]).toContain(`- ${open.fingerprint} at \`f.txt:1\` [warning] Open one (security-review)`);
     expect(trace.sessions[0]!.prompts[0]).toContain(`Threads a maintainer closed on purpose, do not report these again:\n- ${wontFix.fingerprint} at`);
     expect(trace.sessions[0]!.prompts[0]).not.toContain(shrikeClosed.fingerprint);
-    expect(trace.sessions[1]!.prompts[0]).toContain(`- ${open.fingerprint} at`);
-    expect(trace.sessions[1]!.prompts[0]).not.toContain(`- ${fixed.fingerprint} at`);
+    for (const own of [fixed, discussed, open, wrong]) expect(trace.sessions[1]!.prompts[0]).toContain(`- ${own.fingerprint} at`);
     expect(trace.replies).toEqual([
       { commentId: 12, text: `Fixed in ${sha.slice(0, 7)}.`, closing: false },
       { commentId: 14, text: "Withdrawn: the value is validated upstream", closing: true },
@@ -417,7 +416,7 @@ describe("runJob", () => {
     const logs: string[] = [];
     await runJob({ owner: "o", repo: "r", pr: 1, trigger: "pull_request", reviews: [] }, { gh: denied.gh, backend: denied.backend, settings: settings({ reviews: ["slop-review", "security-review"], shriken: false }), reviews, cwd: dir, log: (line) => logs.push(line) });
     expect(denied.trace.closed).toEqual([]);
-    expect(denied.trace.replies.map((reply) => reply.commentId)).toEqual([11, 14]);
+    expect(denied.trace.replies.map((reply) => reply.commentId)).toEqual([14]);
     expect(logs).toContain("could not close the thread at f.txt: Resource not accessible by integration");
     expect(denied.trace.statuses.at(-1)).toContain("### Open (3)\n- **[warning] Fixed one** `f.txt:1` · slop-review [thread](https://gh/t/1)\n- **[warning] Wrong one** `f.txt:1` · slop-review [thread](https://gh/t/4)\n- `new` **[warning] warn finding**");
     expect(denied.trace.statuses.at(-1)).not.toContain("Resolved since");
