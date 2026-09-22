@@ -36,6 +36,9 @@ describe("fingerprints", () => {
     expect(body.match(/```suggestion/g)).toHaveLength(1);
     expect(fingerprintIn(body)).toBe("0123456789abcdef");
     expect(headOf(body)).toEqual({ severity: "warning", title: "Wrong count", skills: ["security-review"] });
+    const deleted = renderThread({ fingerprint: "0123456789abcdef", skills: ["cleanup"], finding: finding({ related: [{ path: "src/old.ts", line: 6, startLine: 1, suggestion: "" }] }) }, BLOB);
+    expect(deleted).toEndWith(`Also at [\`src/old.ts:1-6\`](${BLOB}/src/old.ts#L1-L6)\n\nDelete these lines.`);
+    expect(deleted).not.toContain("```");
   });
 
   test("replies tell Shrike's own answers from a human's, and a closing reply marks a thread Shrike closed", () => {

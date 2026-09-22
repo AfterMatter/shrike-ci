@@ -49,7 +49,7 @@ const READABLE: Record<string, (value: string) => string> = { review: (value) =>
 
 export const plainDecision = (summary: string): string =>
   summary
-    .replace(/```[\s\S]*?```|^!\[[^\]]*\]\([^)]*\)\s*$/gm, "\n\n")
+    .replace(/```[\s\S]*?(?:```|(?![\s\S]))|^!\[[^\]]*\]\([^)]*\)\s*$/gm, "\n\n")
     .split(/\n\s*\n/)
     .map((paragraph) => paragraph.replace(/\s+/g, " ").trim())
     .filter(Boolean)
@@ -91,7 +91,7 @@ export function renderCard(runs: ReviewRun[], card: Card = {}): string {
       const summary = run.status === "done" && !OWN.has(run.review) ? run.report?.summary.trim() : undefined;
       if (!summary) return [];
       const head = summary.slice(0, NOTE_LIMIT);
-      const note = head === summary ? summary : `${head}${(head.match(/```/g)?.length ?? 0) % 2 ? "\n```" : ""}\n\n(cut here, the check has the full text)`;
+      const note = `${head}${(head.match(/```/g)?.length ?? 0) % 2 ? "\n```" : ""}${head === summary ? "" : "\n\n(cut here, the check has the full text)"}`;
       return [`<details${run.review === ASK && !run.posted ? " open" : ""}><summary>${run.review} said</summary>\n\n${note}\n\n</details>`];
     }),
     card.nits?.length ? `<details><summary>Nits (${card.nits.length})</summary>\n\n${card.nits.map(({ finding, skills }) => `- ${at(finding.path, finding.line)}${finding.related?.length ? ` and ${count(finding.related.length, "other place")}` : ""} **${finding.title}** · ${skills.join(", ")}: ${finding.body.split("\n", 1)[0]}`).join("\n")}\n\n</details>` : "",

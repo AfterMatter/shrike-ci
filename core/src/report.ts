@@ -88,9 +88,12 @@ export const verdictOf = (findings: Finding[]): Report["verdict"] => {
   return top ? VERDICT_OF[top.severity] : "pass";
 };
 
+const ranged = <T extends Spot>(spot: T): T => (spot.startLine === undefined || spot.startLine < spot.line ? spot : { ...spot, startLine: undefined });
+
 export const parseReport = (text: string): Report => {
   const report = parseJson(text, reportSchema);
-  return { ...report, verdict: verdictOf(report.findings) };
+  const findings = report.findings.map((finding) => ({ ...ranged(finding), ...(finding.related ? { related: finding.related.map(ranged) } : {}) }));
+  return { ...report, findings, verdict: verdictOf(findings) };
 };
 
 export function parseShriken(text: string): string {

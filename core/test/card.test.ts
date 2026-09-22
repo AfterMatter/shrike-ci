@@ -64,6 +64,9 @@ describe("renderCard", () => {
     expect(cut).toContain(`\`\`\`ts\n${"x".repeat(3000 - 14)}\n\`\`\`\n\n(cut here, the check has the full text)\n\n</details>`);
     expect(cut).not.toContain("End.");
     expect(body.match(/```/g)!.length % 2).toBe(0);
+    const short = renderCard([run("ask", { report: { summary: "Try:\n\n```ts\nretry()", verdict: "pass", findings: [] } })]);
+    expect(short).toContain("<details open><summary>ask said</summary>\n\nTry:\n\n```ts\nretry()\n```\n\n</details>");
+    expect(short).not.toContain("cut here");
   });
 
   test("a nit spread over several places says how many more", () => {
@@ -91,5 +94,13 @@ describe("renderCard", () => {
     const decision = plainDecision(summary);
     expect(decision).toBe("Hold and do not merge. The deciding thing is the pull request's own do-not-merge instruction, since this is a lifecycle test fixture rather than a change meant to land, even though the fix in `e24da50` is verified and every review — code-review, house-style, slop-review, cleanup — passes. I would change my mind if the author updates the description to drop that instruction and asks for the pull request to be merged.");
     expect(decision).not.toMatch(/```|,,|\[\w+:/);
+  });
+
+  test("a live summary that ends inside an unclosed suggestion block falls back to its last prose paragraph", async () => {
+    const decision = plainDecision(await Bun.file(`${import.meta.dir}/fixtures/shriken-unclosed-fence.md`).text());
+    expect(decision).toStartWith("Three reviews converge on that hole");
+    expect(decision).toEndWith("The suggested fix constrains the name before it reaches the filesystem:");
+    expect(decision).not.toMatch(/```|removeUpload|\[\w+:/);
+    expect(plainDecision("Hold it [review:a].\n\n```diff\n+x")).toBe("Hold it.");
   });
 });

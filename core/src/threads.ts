@@ -82,7 +82,7 @@ export async function flag(runs: { review: string; findings: Finding[] }[], line
 
 export function renderThread({ fingerprint, skills, finding }: Flagged, blob: string): string {
   const fence = (lang: string, code: string | undefined) => (code === undefined ? "" : `\n\n\`\`\`${lang}\n${code}\n\`\`\``);
-  const related = (finding.related ?? []).map((spot) => `\n\nAlso at [\`${spotAt(spot)}\`](${blob}/${spot.path}#L${spot.startLine === undefined ? spot.line : `${spot.startLine}-L${spot.line}`})${fence("", spot.suggestion)}`);
+  const related = (finding.related ?? []).map((spot) => `\n\nAlso at [\`${spotAt(spot)}\`](${blob}/${spot.path}#L${spot.startLine === undefined ? spot.line : `${spot.startLine}-L${spot.line}`})${spot.suggestion === "" ? "\n\nDelete these lines." : fence("", spot.suggestion)}`);
   return `${FINDING_MARKER} ${fingerprint} -->\n**[${finding.severity}] ${finding.title}** · ${skills.join(", ")}\n\n${finding.body}${fence("suggestion", finding.suggestion)}${related.join("")}`;
 }
 
