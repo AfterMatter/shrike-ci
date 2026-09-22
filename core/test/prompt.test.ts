@@ -33,8 +33,8 @@ describe("buildShrikenPrompt", () => {
   });
 
   test("lists every related place of a finding with its suggestion to Shriken and to autofix", () => {
-    const grouped: ReviewRun = { review: "security-review", backend: "b", model: "m", status: "done", report: { summary: "s", verdict: "fail", findings: [{ path: "a.ts", line: 3, severity: "error", title: "Unchecked id", body: "Trusts the id.", suggestion: "own();", related: [{ path: "b.ts", line: 9, startLine: 7, suggestion: "check();" }, { path: "c.ts", line: 1 }] }] } };
-    const listed = "1. a.ts:3 [error] Unchecked id\nTrusts the id.\n```suggestion\nown();\n```\nAlso at b.ts:7-9\n```suggestion\ncheck();\n```\nAlso at c.ts:1";
+    const grouped: ReviewRun = { review: "security-review", backend: "b", model: "m", status: "done", report: { summary: "s", verdict: "fail", findings: [{ path: "a.ts", line: 3, severity: "error", title: "Unchecked id", body: "Trusts the id.", suggestion: "own();", related: [{ path: "b.ts", line: 9, startLine: 7, suggestion: "check();" }, { path: "c.ts", line: 1 }, { path: "d.ts", line: 4, suggestion: "" }] }] } };
+    const listed = "1. a.ts:3 [error] Unchecked id\nTrusts the id.\n```suggestion\nown();\n```\nAlso at b.ts:7-9\n```\ncheck();\n```\nAlso at c.ts:1\nAlso at d.ts:4\nDelete these lines.";
     expect(buildShrikenPrompt(pr, history, [grouped])).toContain(`## Review: security-review\nVerdict: fail\nSummary: s\n${listed}\n\n# Diff`);
     expect(buildAutofixPrompt(pr, "all", { failures: [], findings: [grouped], pending: [] })).toContain(`## Review: security-review (fail)\n${listed}\n\n# Output contract`);
   });

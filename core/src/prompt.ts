@@ -3,7 +3,7 @@
 import type { Problems } from "./autofix";
 import { ABOUT, CAPTURE, fileIn, shotFile, SIDES, videoFile, type Shot, type Side } from "./capture";
 import type { PullRequest, PullRequestHistory } from "./github";
-import { spotAt, type Finding, type Spot } from "./report";
+import { fenced, relatedChange, spotAt, type Finding } from "./report";
 import type { ReviewRun } from "./runner";
 import type { AutofixMode, Review } from "./settings";
 import type { Thread } from "./threads";
@@ -46,10 +46,8 @@ const clipDiff = (diff: string): string => (diff.length > DIFF_LIMIT ? `${diff.s
 
 const list = <T>(items: T[], render: (item: T, index: number) => string): string => (items.length ? items.map(render).join("\n") : "(none)");
 
-const suggested = (spot: Spot): string => (spot.suggestion === undefined ? "" : `\n\`\`\`suggestion\n${spot.suggestion}\n\`\`\``);
-
 const findingLines = (finding: Finding, n: number): string =>
-  `${n + 1}. ${spotAt(finding)} [${finding.severity}] ${finding.title}\n${finding.body}${suggested(finding)}${(finding.related ?? []).map((spot) => `\nAlso at ${spotAt(spot)}${suggested(spot)}`).join("")}`;
+  `${n + 1}. ${spotAt(finding)} [${finding.severity}] ${finding.title}\n${finding.body}${fenced("suggestion", finding.suggestion, "\n")}${(finding.related ?? []).map((spot) => `\nAlso at ${spotAt(spot)}${relatedChange(spot, "\n")}`).join("")}`;
 
 const threadLine = (thread: Thread): string => `- ${thread.fingerprint} at \`${thread.path}${thread.line === null ? "" : `:${thread.line}`}\` [${thread.severity}] ${thread.title} (${thread.skills.join(", ") || "shrike"})`;
 

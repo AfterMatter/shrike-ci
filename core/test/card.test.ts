@@ -101,6 +101,9 @@ describe("renderCard", () => {
     expect(decision).toStartWith("Three reviews converge on that hole");
     expect(decision).toEndWith("The suggested fix constrains the name before it reaches the filesystem:");
     expect(decision).not.toMatch(/```|removeUpload|\[\w+:/);
+    const again = plainDecision(await Bun.file(`${import.meta.dir}/fixtures/shriken-trailing-code.md`).text());
+    expect(again).not.toMatch(/```|const findingLines|\[\w+:/);
+    expect(again.length).toBeGreaterThan(40);
     expect(plainDecision("Hold it [review:a].\n\n```diff\n+x")).toBe("Hold it.");
   });
 });

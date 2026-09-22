@@ -81,6 +81,10 @@ export function parseJson<T>(text: string, schema: z.ZodType<T>, what = "report"
 
 export const spotAt = (spot: Spot): string => `${spot.path}:${spot.startLine === undefined ? spot.line : `${spot.startLine}-${spot.line}`}`;
 
+export const fenced = (lang: string, code: string | undefined, gap: string): string => (code === undefined ? "" : `${gap}\`\`\`${lang}\n${code}\n\`\`\``);
+
+export const relatedChange = (spot: Spot, gap: string): string => (spot.suggestion === "" ? `${gap}Delete these lines.` : fenced("", spot.suggestion, gap));
+
 export const topFinding = (findings: Finding[]): Finding | undefined => findings.reduce<Finding | undefined>((top, finding) => (top && SEVERITY_RANK[top.severity] >= SEVERITY_RANK[finding.severity] ? top : finding), undefined);
 
 export const verdictOf = (findings: Finding[]): Report["verdict"] => {
