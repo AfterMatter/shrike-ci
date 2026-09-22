@@ -12,7 +12,7 @@ import { globMatches, patchId } from "./diff";
 import { conclusionOf, headline, splitFlagged, STATUS_MARKER, type CheckHandle, type MediaFile, type PullRequest, type PullRequestClient } from "./github";
 import type { Job } from "./job";
 import { ASK, askReview, AUTOFIX_RETRY_PROMPT, buildAutofixPrompt, buildCapturePlanPrompt, buildCaptureShotsPrompt, buildPrompt, buildShrikenPrompt, CAPTURE_PLAN_RETRY_PROMPT, CAPTURE_TAKEN_RETRY_PROMPT, RETRY_PROMPT, SHRIKEN_RETRY_PROMPT, VERIFY_PROMPT } from "./prompt";
-import { parseReport, parseShriken, parseShrikenScores, shrikenReferences, topFinding, type Capture, type Judgement, type Report } from "./report";
+import { parseReport, parseShriken, parseShrikenScores, shrikenReferences, topFinding, verdictOf, type Capture, type Finding, type Judgement, type Report } from "./report";
 import type { AutofixMode, Review, Settings } from "./settings";
 import { flag, judge, lineReader, renderThread, type Flagged, type Thread } from "./threads";
 
@@ -100,9 +100,9 @@ export const runRecord = (job: Job, run: ReviewRun, pr: PullRequest): RunRecord 
   transcript: run.transcript ?? [],
 });
 
-export const checkTitle = (report: Report): string => {
-  const top = topFinding(report.findings);
-  return top ? `${report.verdict}: ${top.title}` : "pass: no findings";
+export const checkTitle = (verdict: Report["verdict"], findings: Finding[]): string => {
+  const top = topFinding(findings);
+  return top ? `${verdict}: ${top.title}` : "pass: no findings";
 };
 
 export const skipNote = (body: string, note: string): string => body.replace(/^> Same changes as [^\n]*\n\n/m, "").replace(/^(## Shrike[^\n]*)/m, `$1\n\n> ${note}`);
@@ -220,9 +220,13 @@ export async function runJob(job: Job, deps: RunDeps): Promise<ReviewRun[]> {
       const mine = run.review === ASK ? [] : open;
       const first = await ask(run, session, buildPrompt(loaded, pr, { threads: mine, wontFix, previous, followUp }), RETRY_PROMPT, parseReport, deps.log);
       run.report = first.findings.length ? await ask(run, session, VERIFY_PROMPT, RETRY_PROMPT, parseReport, deps.log) : first;
-      if (mine.length) judged.push(run.report.threads ?? first.threads ?? []);
+      const judgements = mine.length ? run.report.threads ?? first.threads ?? [] : [];
+      judged.push(judgements);
+      const held = open.filter((thread) => thread.skills.includes(run.review) && judgements.some((own) => own.fingerprint === thread.fingerprint && own.state === "open"));
+      const gating = [...run.report.findings, ...held.map((thread) => ({ path: thread.path, line: thread.line ?? 1, severity: thread.severity, title: thread.title, body: thread.url }))];
+      run.report = { ...run.report, verdict: verdictOf(gating) };
       if (job.replyTo !== undefined && run.review === ASK) run.posted = { id: job.replyTo, url: await deps.gh.reply(pr, job.replyTo, run.report.summary) };
-      await check.finish(conclusionOf(run.report), checkTitle(run.report), run.report.summary);
+      await check.finish(conclusionOf(run.report), checkTitle(run.report.verdict, gating), run.report.summary);
     });
   const lifecycle = async () => {
     const reported = job.replyTo === undefined ? runs.flatMap((run) => (run.report && !OWN.has(run.review) ? [{ review: run.review, findings: run.report.findings }] : [])) : [];
