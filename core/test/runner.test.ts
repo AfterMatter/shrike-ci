@@ -371,6 +371,33 @@ describe("runJob", () => {
     expect(trace.statuses.at(-1)).not.toContain("`new`");
   });
 
+  test("an error thread a review judges still open keeps that review's check failing even with no new findings, and does not fail reviews that never flagged it", async () => {
+    const { dir, sha } = await repoAtHead();
+    const pr = prAt(dir, sha);
+    const held = thread({ fingerprint: "9".repeat(16), title: "Leaks the token", severity: "error", skills: ["code-review", "slop-review"] });
+    const still = report("pass", [], { threads: [{ fingerprint: held.fingerprint, state: "open", reason: "still logged" }] });
+    const { trace, backend, gh } = fakes({ "code-review": [still], "slop-review": [still], cleanup: [still] }, pr, { threads: [held] });
+    const runs = await runJob({ owner: "o", repo: "r", pr: 1, trigger: "pull_request", reviews: [] }, { gh, backend, settings: settings({ reviews: ["code-review", "slop-review", "cleanup"], shriken: false }), reviews, cwd: dir, log: () => {} });
+    expect(runs.map((r) => [r.review, r.report?.verdict, r.report?.findings.length])).toEqual([
+      ["code-review", "fail", 0],
+      ["slop-review", "fail", 0],
+      ["cleanup", "pass", 0],
+    ]);
+    expect(trace.checks.map((c) => [c.review, c.conclusion, c.title])).toEqual([
+      ["code-review", "failure", "fail: Leaks the token"],
+      ["slop-review", "failure", "fail: Leaks the token"],
+      ["cleanup", "success", "pass: no findings"],
+    ]);
+    expect(trace.reviews).toEqual([]);
+    expect(trace.replies).toEqual([]);
+    expect(trace.statuses.at(-1)).toContain("## Shrike · changes needed");
+
+    const fixedNow = fakes({ "code-review": [report("pass", [], { threads: [{ fingerprint: held.fingerprint, state: "fixed" }] })] }, pr, { threads: [held] });
+    const cleared = await runJob({ owner: "o", repo: "r", pr: 1, trigger: "pull_request", reviews: [] }, { gh: fixedNow.gh, backend: fixedNow.backend, settings: settings({ reviews: ["code-review"], shriken: false }), reviews, cwd: dir, log: () => {} });
+    expect(cleared[0]!.report?.verdict).toBe("pass");
+    expect(fixedNow.trace.checks[0]).toEqual({ review: "code-review", conclusion: "success", title: "pass: no findings" });
+  });
+
   test("threads the agent judges fixed or wrong get a closing reply and are resolved, unless a human replied, and a maintainer's own close is a won't fix", async () => {
     const { dir, sha } = await repoAtHead();
     const pr = prAt(dir, sha);
