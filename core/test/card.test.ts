@@ -75,6 +75,12 @@ describe("renderCard", () => {
     expect(reopened).toContain("```\n```ts\ncode\n```\n```\n```\n\n</details>");
     const closed = renderCard([run("a", { report: { summary: "```ts\ncode\n```\n\nDone.", verdict: "pass", findings: [] } })]);
     expect(closed).toContain("```ts\ncode\n```\n\nDone.\n\n</details>");
+    const note = (summary: string) => renderCard([run("a", { report: { summary, verdict: "pass", findings: [] } })]).split("<summary>a said</summary>\n\n")[1]!.split("\n\n</details>")[0];
+    expect(note("Wide:\n\n````\n```\n````\n\nDone.")).toBe("Wide:\n\n````\n```\n````\n\nDone.");
+    expect(note("Wide:\n\n````md\n```\ninner")).toBe("Wide:\n\n````md\n```\ninner\n````");
+    expect(note("Tilde:\n\n~~~\n```\nx")).toBe("Tilde:\n\n~~~\n```\nx\n~~~");
+    expect(note("Indented:\n\n    ```\n    code")).toBe("Indented:\n\n    ```\n    code");
+    expect(note("``` inline ``` in prose")).toBe("``` inline ``` in prose");
   });
 
   test("a nit spread over several places says how many more", () => {
