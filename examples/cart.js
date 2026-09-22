@@ -4,6 +4,6 @@
 const prices = process.argv.slice(2).map(Number);
 
 let total = 0;
-for (let i = 0; i <= prices.length; i++) total += prices[i];
+for (let i = 0; i < prices.length; i++) total += prices[i];
 
 console.log(`Total: ${total.toFixed(2)}`);
