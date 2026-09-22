@@ -20,6 +20,6 @@ jobs:
       id-token: write
     steps:
       - uses: actions/checkout@v4
-      - uses: AfterMatter/shrike-ci/action@main
+      - uses: AfterMatter/shrike-ci/action@forloopcodes/shr-4-review-structure-update
         with:
           api_url: https://shriken.vercel.app
