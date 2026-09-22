@@ -91,7 +91,8 @@ export function renderCard(runs: ReviewRun[], card: Card = {}): string {
       const summary = run.status === "done" && !OWN.has(run.review) ? run.report?.summary.trim() : undefined;
       if (!summary) return [];
       const head = summary.slice(0, NOTE_LIMIT);
-      const note = `${head}${head.split("\n").filter((row) => /^\s*```/.test(row)).length % 2 ? "\n```" : ""}${head === summary ? "" : "\n\n(cut here, the check has the full text)"}`;
+      const open = head.split("\n").reduce((inside, row) => (inside ? !/^\s*```\s*$/.test(row) : /^\s*```/.test(row)), false);
+      const note = `${head}${open ? "\n```" : ""}${head === summary ? "" : "\n\n(cut here, the check has the full text)"}`;
       return [`<details${run.review === ASK && !run.posted ? " open" : ""}><summary>${run.review} said</summary>\n\n${note}\n\n</details>`];
     }),
     card.nits?.length ? `<details><summary>Nits (${card.nits.length})</summary>\n\n${card.nits.map(({ finding, skills }) => `- ${at(finding.path, finding.line)}${finding.related?.length ? ` and ${count(finding.related.length, "other place")}` : ""} **${finding.title}** · ${skills.join(", ")}: ${finding.body.split("\n", 1)[0]}`).join("\n")}\n\n</details>` : "",

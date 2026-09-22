@@ -71,6 +71,10 @@ describe("renderCard", () => {
     expect(inline).toContain("<summary>a said</summary>\n\nWrap the value in ``` before posting.\n\n</details>");
     const nested = renderCard([run("a", { report: { summary: "```ts\nconst a = 1;\n```\n\nPy:\n\n```py\nx = '```'\nrest", verdict: "pass", findings: [] } })]);
     expect(nested).toContain("x = '```'\nrest\n```\n\n</details>");
+    const reopened = renderCard([run("a", { report: { summary: "```\n```ts\ncode\n```\n```", verdict: "pass", findings: [] } })]);
+    expect(reopened).toContain("```\n```ts\ncode\n```\n```\n```\n\n</details>");
+    const closed = renderCard([run("a", { report: { summary: "```ts\ncode\n```\n\nDone.", verdict: "pass", findings: [] } })]);
+    expect(closed).toContain("```ts\ncode\n```\n\nDone.\n\n</details>");
   });
 
   test("a nit spread over several places says how many more", () => {
