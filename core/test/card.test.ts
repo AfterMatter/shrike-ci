@@ -56,8 +56,16 @@ describe("renderCard", () => {
     expect(verdictLine([])).toBe("nothing to review");
   });
 
-  test("the decision is the last paragraph of the Shriken summary without its tokens or blocks", () => {
-    expect(plainDecision("It adds a line [commit:abcdef0] to [file:f.txt:1].\n\n```diff\n+x\n```\n\nMerge it [review:code-review], the count in [file:a.ts:3] decides it [finding:code-review#1].")).toBe("Merge it, the count in decides it.");
-    expect(plainDecision("Only one paragraph [review:a].")).toBe("Only one paragraph.");
+  test("the decision is the last paragraph of the Shriken summary, blocks dropped and tokens made readable", () => {
+    expect(plainDecision("It adds a line [commit:abcdef0] to [file:f.txt:1].\n\n```diff\n+x\n```\n\nMerge it [review:code-review], the count in [file:a.ts:3] decides it [finding:code-review#1].")).toBe("Merge it code-review, the count in `a.ts` decides it.");
+    expect(plainDecision("Only one paragraph, see [issue:12] for [commit:abc1234] context [review:a] [file:b.ts:2].")).toBe("Only one paragraph, see #12 for `abc1234` context.");
+    expect(plainDecision("First.\n\n![before](https://x/1.png)\n\nHold it [review:a].\n![after](https://x/2.png)")).toBe("Hold it.");
+  });
+
+  test("a live summary whose blocks sit inside paragraphs without blank lines gives a clean last paragraph", async () => {
+    const summary = await Bun.file(`${import.meta.dir}/fixtures/shriken-inline-blocks.md`).text();
+    const decision = plainDecision(summary);
+    expect(decision).toBe("Hold and do not merge. The deciding thing is the pull request's own do-not-merge instruction, since this is a lifecycle test fixture rather than a change meant to land, even though the fix in `e24da50` is verified and every review — code-review, house-style, slop-review, cleanup — passes. I would change my mind if the author updates the description to drop that instruction and asks for the pull request to be merged.");
+    expect(decision).not.toMatch(/```|,,|\[\w+:/);
   });
 });

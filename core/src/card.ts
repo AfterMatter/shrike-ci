@@ -43,14 +43,19 @@ export const patchIn = (body: string | null): { id: string; sha: string } | null
 
 export const decisionIn = (body: string | null): string | null => /<!-- shrike:decision -->\n([\s\S]*?)(?:\n\n|$)/.exec(body ?? "")?.[1]?.trim() || null;
 
+const READABLE: Record<string, (value: string) => string> = { review: (value) => value, commit: (value) => `\`${value}\``, issue: (value) => `#${value}`, file: (value) => `\`${value.replace(/:\d+$/, "")}\``, finding: () => "" };
+
 export const plainDecision = (summary: string): string =>
   summary
+    .replace(/```[\s\S]*?```|^!\[[^\]]*\]\([^)]*\)\s*$/gm, "\n\n")
     .split(/\n\s*\n/)
-    .map((paragraph) => paragraph.trim())
-    .filter((paragraph) => paragraph && !paragraph.startsWith("```") && !paragraph.startsWith("!["))
+    .map((paragraph) => paragraph.replace(/\s+/g, " ").trim())
+    .filter(Boolean)
     .at(-1)!
-    .replace(/\s*\[(finding|review|commit|issue|file):[^\]]+\]/g, "")
-    .replace(/\s+([.,;:])/g, "$1");
+    .replace(/(?:\s*\[(?:finding|review|commit|issue|file):[^\]\s]+\])+(?=\s*(?:[.;:!?)]|$))/g, "")
+    .replace(/\[(finding|review|commit|issue|file):([^\]\s]+)\]/g, (_, kind: string, value: string) => READABLE[kind]!(value))
+    .replace(/\s+([.,;:])/g, "$1")
+    .replace(/ {2,}/g, " ");
 
 export function verdictLine(runs: ReviewRun[]): string {
   const reviews = runs.filter((run) => !OWN.has(run.review));
