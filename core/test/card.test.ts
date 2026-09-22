@@ -67,6 +67,10 @@ describe("renderCard", () => {
     const short = renderCard([run("ask", { report: { summary: "Try:\n\n```ts\nretry()", verdict: "pass", findings: [] } })]);
     expect(short).toContain("<details open><summary>ask said</summary>\n\nTry:\n\n```ts\nretry()\n```\n\n</details>");
     expect(short).not.toContain("cut here");
+    const inline = renderCard([run("a", { report: { summary: "Wrap the value in ``` before posting.", verdict: "pass", findings: [] } })]);
+    expect(inline).toContain("<summary>a said</summary>\n\nWrap the value in ``` before posting.\n\n</details>");
+    const nested = renderCard([run("a", { report: { summary: "```ts\nconst a = 1;\n```\n\nPy:\n\n```py\nx = '```'\nrest", verdict: "pass", findings: [] } })]);
+    expect(nested).toContain("x = '```'\nrest\n```\n\n</details>");
   });
 
   test("a nit spread over several places says how many more", () => {

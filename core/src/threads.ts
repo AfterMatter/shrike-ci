@@ -3,7 +3,7 @@
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { fenced, relatedChange, SEVERITY_RANK, spotAt, type Finding, type Judgement } from "./report";
+import { fenced, relatedChange, SEVERITY_RANK, spotAt, spotRange, type Finding, type Judgement } from "./report";
 
 export interface Reply {
   id: number;
@@ -81,7 +81,7 @@ export async function flag(runs: { review: string; findings: Finding[] }[], line
 }
 
 export function renderThread({ fingerprint, skills, finding }: Flagged, blob: string): string {
-  const related = (finding.related ?? []).map((spot) => `\n\nAlso at [\`${spotAt(spot)}\`](${blob}/${spot.path}#L${spot.startLine === undefined ? spot.line : `${spot.startLine}-L${spot.line}`})${relatedChange(spot, "\n\n")}`);
+  const related = (finding.related ?? []).map((spot) => `\n\nAlso at [\`${spotAt(spot)}\`](${blob}/${spot.path}#L${spotRange(spot).replace("-", "-L")})${relatedChange(spot, "\n\n")}`);
   return `${FINDING_MARKER} ${fingerprint} -->\n**[${finding.severity}] ${finding.title}** · ${skills.join(", ")}\n\n${finding.body}${fenced("suggestion", finding.suggestion, "\n\n")}${related.join("")}`;
 }
 

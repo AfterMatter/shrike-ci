@@ -79,7 +79,9 @@ export function parseJson<T>(text: string, schema: z.ZodType<T>, what = "report"
   throw new Error(`${what} is not valid JSON: ${lastError}`);
 }
 
-export const spotAt = (spot: Spot): string => `${spot.path}:${spot.startLine === undefined ? spot.line : `${spot.startLine}-${spot.line}`}`;
+export const spotRange = (spot: Spot): string => (spot.startLine === undefined ? `${spot.line}` : `${spot.startLine}-${spot.line}`);
+
+export const spotAt = (spot: Spot): string => `${spot.path}:${spotRange(spot)}`;
 
 export const fenced = (lang: string, code: string | undefined, gap: string): string => (code === undefined ? "" : `${gap}\`\`\`${lang}\n${code}\n\`\`\``);
 
