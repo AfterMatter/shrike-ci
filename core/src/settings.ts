@@ -25,6 +25,7 @@ export const reviewSchema = z.object({
     .max(64),
   description: z.string().min(1),
   body: z.string().min(1),
+  paths: z.array(z.string().min(1).max(200)).max(32).optional(),
 });
 
 export type Settings = z.infer<typeof settingsSchema>;

@@ -1,9 +1,10 @@
-// GitHub side of a run: load PR context and history, post reviews, keep
-// sticky comments and checks, read other checks and logs, publish media files.
+// GitHub side of a run: load PR context and history, post the one review
+// and its threads, keep the card and checks, read other checks, publish media.
 import { Octokit } from "octokit";
 import { commentableLines, renderPatch } from "./diff";
-import type { Job } from "./job";
-import type { Finding, Report } from "./report";
+import { CHECK_ACTIONS, type Job } from "./job";
+import type { Report } from "./report";
+import { closedByShrike, fingerprintIn, headOf, isHumanReply, replyBody, type Flagged, type Thread } from "./threads";
 
 export interface PullRequestFile {
   path: string;
@@ -95,20 +96,38 @@ export interface CheckHandle {
 export interface StickyComment {
   id: number;
   url: string;
+  previous: string | null;
   update(body: string): Promise<void>;
+}
+
+export type Closed = "resolved" | "minimized";
+
+interface ThreadNode {
+  id: string;
+  isResolved: boolean;
+  path: string;
+  line: number | null;
+  comments: { nodes: { id: string; databaseId: number; body: string; url: string; author: { login: string } | null }[] };
+}
+
+interface ThreadsPage {
+  repository: { pullRequest: { reviewThreads: { pageInfo: { hasNextPage: boolean; endCursor: string | null }; nodes: ThreadNode[] } } };
 }
 
 export const STATUS_MARKER = "<!-- shrike:status -->";
 export const REFRESH_MARGIN_MS = 5 * 60 * 1000;
 const SHRIKE_MARKER = "<!-- shrike:";
-const VERDICT_LABEL = { pass: "pass", warn: "warnings", fail: "changes needed" } as const;
 const CONCLUSION: Record<Report["verdict"], Conclusion> = { pass: "success", warn: "neutral", fail: "failure" };
+const OWN_CHECK = "shrike/";
+const THREADS_QUERY = `query($owner: String!, $repo: String!, $number: Int!, $after: String) {
+  repository(owner: $owner, name: $repo) { pullRequest(number: $number) { reviewThreads(first: 100, after: $after) {
+    pageInfo { hasNextPage endCursor }
+    nodes { id isResolved path line comments(first: 100) { nodes { id databaseId body url author { login } } } }
+  } } } }`;
 
 export const conclusionOf = (report: Report): Conclusion => CONCLUSION[report.verdict];
 
 export const headline = (message: string): string => message.split("\n", 1)[0]!.trim();
-
-const OWN_CHECK = "shrike/";
 
 export const jobIdOf = (url: string | null): number | null => {
   const match = /\/actions\/runs\/\d+\/jobs?\/(\d+)/.exec(url ?? "");
@@ -135,32 +154,42 @@ export function imagesOf(body: string, cap = 12): Image[] {
   return images.slice(0, cap);
 }
 
-export function renderFinding(finding: Finding): string {
-  const suggestion = finding.suggestion === undefined ? "" : `\n\n\`\`\`suggestion\n${finding.suggestion}\n\`\`\``;
-  return `**[${finding.severity}] ${finding.title}**\n\n${finding.body}${suggestion}`;
-}
+export const renderReviewBody = (count: number): string => `## Shrike\n\n${count} new ${count === 1 ? "problem" : "problems"} in this push, one thread each. Threads close themselves once a later push fixes them.`;
 
-export function renderReviewBody(skill: string, report: Report, outside: Finding[]): string {
-  const extra = outside.length
-    ? `\n\n### Findings outside the diff\n${outside.map((f) => `- \`${f.path}:${f.line}\` **${f.title}** (${f.severity}): ${f.body}`).join("\n")}`
-    : "";
-  return `## Shrike · ${skill} · ${VERDICT_LABEL[report.verdict]}\n\n${report.summary.trim()}${extra}`;
-}
-
-export function splitFindings(report: Report, files: PullRequestFile[]): { inline: Finding[]; outside: Finding[] } {
+export function splitFlagged(flagged: Flagged[], files: PullRequestFile[]): { inline: Flagged[]; outside: Flagged[] } {
   const lines = new Map(files.map((f) => [f.path, f.lines]));
-  const inline: Finding[] = [];
-  const outside: Finding[] = [];
-  for (const finding of report.findings) {
+  const inline: Flagged[] = [];
+  const outside: Flagged[] = [];
+  for (const item of flagged) {
+    const { finding } = item;
     const fileLines = lines.get(finding.path);
     if (!fileLines?.has(finding.line)) {
-      outside.push(finding);
+      outside.push(item);
       continue;
     }
     const rangeOk = finding.startLine !== undefined && finding.startLine < finding.line && fileLines.has(finding.startLine);
-    inline.push(rangeOk ? finding : { ...finding, startLine: undefined });
+    inline.push(rangeOk ? item : { ...item, finding: { ...finding, startLine: undefined } });
   }
   return { inline, outside };
+}
+
+export function threadOf(node: ThreadNode): Thread | null {
+  const [first, ...rest] = node.comments.nodes;
+  const fingerprint = first ? fingerprintIn(first.body) : null;
+  if (!first || !fingerprint) return null;
+  return {
+    id: node.id,
+    fingerprint,
+    path: node.path,
+    line: node.line,
+    ...headOf(first.body),
+    resolved: node.isResolved,
+    closedByShrike: closedByShrike(rest.map((comment) => comment.body)),
+    commentId: first.databaseId,
+    commentNodeId: first.id,
+    url: first.url,
+    replies: rest.filter((comment) => isHumanReply(comment.body)).map((comment) => ({ id: comment.databaseId, author: comment.author?.login ?? "unknown", body: comment.body })),
+  };
 }
 
 export function refreshingAuth(mint: () => Promise<PushIdentity>, first?: PushIdentity): () => { hook: Octokit["auth"] } {
@@ -210,34 +239,70 @@ export class PullRequestClient {
     };
   }
 
-  async postReview(pr: PullRequest, skill: string, report: Report): Promise<{ id: number; url: string }> {
-    const { inline, outside } = splitFindings(report, pr.files);
-    const base = { owner: pr.owner, repo: pr.repo, pull_number: pr.number, commit_id: pr.headSha, event: "COMMENT" as const };
-    const comments = inline.map((f) => ({
-      path: f.path,
-      line: f.line,
+  async postReview(pr: PullRequest, threads: { path: string; line: number; startLine?: number; body: string }[]): Promise<{ id: number; url: string }> {
+    const base = { owner: pr.owner, repo: pr.repo, pull_number: pr.number, commit_id: pr.headSha, event: "COMMENT" as const, body: renderReviewBody(threads.length) };
+    const comments = threads.map((thread) => ({
+      path: thread.path,
+      line: thread.line,
       side: "RIGHT" as const,
-      ...(f.startLine === undefined ? {} : { start_line: f.startLine, start_side: "RIGHT" as const }),
-      body: renderFinding(f),
+      ...(thread.startLine === undefined ? {} : { start_line: thread.startLine, start_side: "RIGHT" as const }),
+      body: thread.body,
     }));
     try {
-      const { data } = await this.octokit.rest.pulls.createReview({ ...base, body: renderReviewBody(skill, report, outside), comments });
+      const { data } = await this.octokit.rest.pulls.createReview({ ...base, comments });
       return { id: data.id, url: data.html_url };
     } catch (error) {
-      if (!comments.length || (error as { status?: number }).status !== 422) throw error;
-      const { data } = await this.octokit.rest.pulls.createReview({ ...base, body: renderReviewBody(skill, report, [...inline, ...outside]) });
+      if ((error as { status?: number }).status !== 422) throw error;
+      const { data } = await this.octokit.rest.pulls.createReview({ ...base, body: `${base.body}\n\n${threads.map((thread) => `- \`${thread.path}:${thread.line}\`\n${thread.body.replace(/^<!--.*-->\n/, "")}`).join("\n")}` });
       return { id: data.id, url: data.html_url };
+    }
+  }
+
+  async threads(pr: PullRequest): Promise<Thread[]> {
+    const found: Thread[] = [];
+    let after: string | null = null;
+    do {
+      const page: ThreadsPage = await this.octokit.graphql(THREADS_QUERY, { owner: pr.owner, repo: pr.repo, number: pr.number, after });
+      const { nodes, pageInfo } = page.repository.pullRequest.reviewThreads;
+      found.push(...nodes.flatMap((node) => threadOf(node) ?? []));
+      after = pageInfo.hasNextPage ? pageInfo.endCursor : null;
+    } while (after);
+    return found;
+  }
+
+  async reply(pr: PullRequest, commentId: number, text: string, closing = false): Promise<string> {
+    const { data } = await this.octokit.rest.pulls.createReplyForReviewComment({ owner: pr.owner, repo: pr.repo, pull_number: pr.number, comment_id: commentId, body: replyBody(text, closing) });
+    return data.html_url;
+  }
+
+  async close(thread: Thread): Promise<Closed> {
+    try {
+      await this.octokit.graphql("mutation($id: ID!) { resolveReviewThread(input: { threadId: $id }) { thread { id } } }", { id: thread.id });
+      return "resolved";
+    } catch {
+      await this.octokit.graphql("mutation($id: ID!) { minimizeComment(input: { subjectId: $id, classifier: OUTDATED }) { minimizedComment { isMinimized } } }", { id: thread.commentNodeId });
+      return "minimized";
     }
   }
 
   async startCheck(pr: PullRequest, skill: string): Promise<CheckHandle> {
     const { owner, repo } = pr;
-    const { data } = await this.octokit.rest.checks.create({ owner, repo, name: `shrike/${skill}`, head_sha: pr.headSha, status: "in_progress" });
+    const { data } = await this.octokit.rest.checks.create({ owner, repo, name: `${OWN_CHECK}${skill}`, head_sha: pr.headSha, status: "in_progress", actions: [...CHECK_ACTIONS] });
     return {
       finish: async (conclusion, title, summary) => {
-        await this.octokit.rest.checks.update({ owner, repo, check_run_id: data.id, status: "completed", conclusion, output: { title, summary: summary.slice(0, 65_000) } });
+        await this.octokit.rest.checks.update({ owner, repo, check_run_id: data.id, status: "completed", conclusion, output: { title, summary: summary.slice(0, 65_000) }, actions: [...CHECK_ACTIONS] });
       },
     };
+  }
+
+  async copyChecks(pr: PullRequest, fromSha: string): Promise<string[]> {
+    const { owner, repo } = pr;
+    const runs = (await this.octokit.paginate(this.octokit.rest.checks.listForRef, { owner, repo, ref: fromSha, per_page: 100 })).filter((run) => run.name.startsWith(OWN_CHECK) && run.status === "completed" && run.conclusion);
+    for (const run of runs) {
+      const output = run.output.title ? { title: run.output.title, summary: run.output.summary ?? "" } : undefined;
+      await this.octokit.rest.checks.create({ owner, repo, name: run.name, head_sha: pr.headSha, status: "completed", conclusion: run.conclusion as NonNullable<typeof run.conclusion>, ...(output ? { output } : {}), actions: [...CHECK_ACTIONS] });
+    }
+    return runs.map((run) => run.name);
   }
 
   async checks(pr: PullRequest, ownRunId?: string): Promise<CheckRun[]> {
@@ -258,12 +323,14 @@ export class PullRequestClient {
     return typeof data === "string" ? data : "";
   }
 
-  async stickyComment(pr: PullRequest, marker: string, body: string): Promise<StickyComment> {
+  async stickyComment(pr: PullRequest, marker: string, body: string | ((previous: string | null) => string)): Promise<StickyComment> {
     const { owner, repo, number: issue_number } = pr;
     const write = (comment_id: number, text: string) => this.octokit.rest.issues.updateComment({ owner, repo, comment_id, body: `${marker}\n${text}` });
     const existing = (await this.octokit.paginate(this.octokit.rest.issues.listComments, { owner, repo, issue_number, per_page: 100 })).find((c) => c.body?.startsWith(marker));
-    const { id, html_url: url } = existing ? (await write(existing.id, body), existing) : (await this.octokit.rest.issues.createComment({ owner, repo, issue_number, body: `${marker}\n${body}` })).data;
-    return { id, url, update: async (next) => void (await write(id, next)) };
+    const previous = existing?.body?.slice(marker.length + 1) ?? null;
+    const text = typeof body === "string" ? body : body(previous);
+    const { id, html_url: url } = existing ? (await write(existing.id, text), existing) : (await this.octokit.rest.issues.createComment({ owner, repo, issue_number, body: `${marker}\n${text}` })).data;
+    return { id, url, previous, update: async (next) => void (await write(id, next)) };
   }
 
   async publish(pr: PullRequest, branch: string, files: MediaFile[], message: string, identity: PushIdentity): Promise<string> {

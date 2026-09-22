@@ -7,7 +7,8 @@ import type { AgentReply, Backend, SessionOptions } from "./types";
 
 const DEFAULT_TIMEOUT_MS = 20 * 60 * 1000;
 const SECRET_ENV = ["GITHUB_TOKEN", "INPUT_GITHUB_TOKEN", "GITHUB_APP_PRIVATE_KEY", "GITHUB_WEBHOOK_SECRET"];
-const REVIEW_PERMISSIONS = { read: "allow", glob: "allow", grep: "allow", list: "allow", lsp: "allow", todowrite: "allow", edit: "deny", bash: "deny", task: "deny", webfetch: "deny", websearch: "deny", external_directory: "deny", question: "deny", skill: "deny" };
+const READ_ONLY_BASH = { "*": "deny", "git diff*": "allow", "git log*": "allow", "git show*": "allow", "git blame*": "allow" };
+const REVIEW_PERMISSIONS = { read: "allow", glob: "allow", grep: "allow", list: "allow", lsp: "allow", todowrite: "allow", edit: "deny", bash: READ_ONLY_BASH, task: "deny", webfetch: "deny", websearch: "deny", external_directory: "deny", question: "deny", skill: "deny" };
 const FIX_PERMISSIONS = { ...REVIEW_PERMISSIONS, edit: "allow", bash: "allow" };
 const PLAYWRIGHT_MCP = "@playwright/mcp@0.0.80";
 const PLAYWRIGHT_CORE = "playwright-core@1.63.0-alpha-2026-08-31";

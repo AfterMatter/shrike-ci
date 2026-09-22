@@ -19,6 +19,12 @@ export const findingSchema = z.object({
   suggestion: z.string().optional(),
 });
 
+export const judgementSchema = z.object({
+  fingerprint: z.string().min(1),
+  state: z.enum(["fixed", "open", "wrong"]),
+  reason: z.string().optional(),
+});
+
 export const captureSchema = z.object({
   shots: z.array(z.object({ name: z.string().min(1), path: z.string().min(1), before: z.string().optional(), after: z.string().optional() })),
   videos: z.object({ before: z.string().optional(), after: z.string().optional() }),
@@ -28,6 +34,7 @@ export const reportSchema = z.object({
   summary: z.string().min(1),
   verdict: z.enum(["pass", "warn", "fail"]),
   findings: z.array(findingSchema).default([]),
+  threads: z.array(judgementSchema).optional(),
   scores: z.record(z.string(), z.number().int().min(0).max(100)).optional(),
   capture: captureSchema.optional(),
 });
@@ -35,8 +42,12 @@ export const reportSchema = z.object({
 const scoresSchema = z.object({ scores: z.record(z.string(), z.number().int().min(0).max(100)) });
 
 export type Finding = z.infer<typeof findingSchema>;
+export type Judgement = z.infer<typeof judgementSchema>;
 export type Report = z.infer<typeof reportSchema>;
 export type Capture = z.infer<typeof captureSchema>;
+
+export const SEVERITY_RANK: Record<Finding["severity"], number> = { info: 0, warning: 1, error: 2 };
+const VERDICT_OF: Record<Finding["severity"], Report["verdict"]> = { info: "pass", warning: "warn", error: "fail" };
 
 const withoutNulls = (value: unknown): unknown =>
   Array.isArray(value)
@@ -63,7 +74,17 @@ export function parseJson<T>(text: string, schema: z.ZodType<T>, what = "report"
   throw new Error(`${what} is not valid JSON: ${lastError}`);
 }
 
-export const parseReport = (text: string): Report => parseJson(text, reportSchema);
+export const topFinding = (findings: Finding[]): Finding | undefined => findings.reduce<Finding | undefined>((top, finding) => (top && SEVERITY_RANK[top.severity] >= SEVERITY_RANK[finding.severity] ? top : finding), undefined);
+
+export const verdictOf = (findings: Finding[]): Report["verdict"] => {
+  const top = topFinding(findings);
+  return top ? VERDICT_OF[top.severity] : "pass";
+};
+
+export const parseReport = (text: string): Report => {
+  const report = parseJson(text, reportSchema);
+  return { ...report, verdict: verdictOf(report.findings) };
+};
 
 export function parseShriken(text: string): string {
   const open = text.lastIndexOf("```markdown");

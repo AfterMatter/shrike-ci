@@ -82,7 +82,8 @@ describe("files and urls", () => {
   test("the comment shows a table of linked images with the videos on public repositories, links and a note on private ones", () => {
     const capture = captureOf(pr, "sha1", shots, ["before-home.png", "after-home.png", "after-settings.png", "before.webm", "after.webm"].map((path) => ({ path, content: Buffer.from(path) })));
     const body = renderCapture(pr, capture);
-    expect(body).toStartWith("## Shrike · before and after\n\n| Page | Before | After |\n| --- | --- | --- |\n");
+    expect(body).toStartWith("| Page | Before | After |\n| --- | --- | --- |\n");
+    expect(body).not.toContain("## Shrike");
     expect(body).toContain(`| **home** \`/\` | <a href="${capture.shots[0]!.before}"><img src="${capture.shots[0]!.before}" alt="before home" width="360"></a> | <a href="${capture.shots[0]!.after}"><img src="${capture.shots[0]!.after}" alt="after home" width="360"></a> |`);
     expect(body).toContain(`| **settings** \`/#/settings\` | not taken | <a href="${capture.shots[1]!.after}">`);
     expect(body).toContain(`Video: [before](${capture.videos.before}), [after](${capture.videos.after})`);

@@ -1,22 +1,33 @@
-// Builds the prompts: reviews get PR context and the JSON contract, capture
-// plans and takes the shots, Shriken gets history and reports, autofix the failures.
+// Builds the prompts: reviews get PR context, the open threads and the JSON
+// contract, a verify turn, capture, Shriken with history, autofix the failures.
 import type { Problems } from "./autofix";
 import { ABOUT, CAPTURE, fileIn, shotFile, SIDES, videoFile, type Shot, type Side } from "./capture";
 import type { PullRequest, PullRequestHistory } from "./github";
 import type { ReviewRun } from "./runner";
 import type { AutofixMode, Review } from "./settings";
+import type { Thread } from "./threads";
+
+export interface ReviewContext {
+  threads?: Thread[];
+  wontFix?: Thread[];
+  previous?: string | null;
+  followUp?: boolean;
+}
 
 const DIFF_LIMIT = 150_000;
 
 export const RETRY_PROMPT =
   "Your last message did not contain a valid report. Reply with only one ```json fenced block matching the output contract, and nothing else.";
 
+export const VERIFY_PROMPT =
+  "Now verify your own report before it is posted. Re-read each finding at its file and line with your tools and confirm it from the code: keep it only when you can point at the exact input or path that makes it wrong, downgrade it when it is real but not as bad as stated, drop it when it cannot be justified or the code already handles it. Keep the thread judgements. Reply with only the final ```json fenced block in the same output contract, and nothing else.";
+
 export const ASK = "ask";
 
-export const askReview = (prompt: string): Review => ({
+export const askReview = (prompt: string, thread?: Thread): Review => ({
   name: ASK,
   description: "What a pull request comment asked for",
-  body: `A maintainer asked in a pull request comment:\n\n${prompt}\n\nDo what the comment asks. Put the answer in the summary and report only the findings the comment calls for.`,
+  body: `A maintainer asked in a pull request comment${thread ? ` in the thread at \`${thread.path}${thread.line === null ? "" : `:${thread.line}`}\` about "${thread.title}"` : ""}:\n\n${prompt}${thread ? `\n\nThe thread so far:\n${list(thread.replies, (reply) => `- ${reply.author}: ${reply.body}`)}` : ""}\n\nDo what the comment asks. Put the answer in the summary${thread ? ", written as a reply in that thread," : ""} and report only the findings the comment calls for.`,
 });
 
 export const SHRIKEN_RETRY_PROMPT =
@@ -34,7 +45,9 @@ const clipDiff = (diff: string): string => (diff.length > DIFF_LIMIT ? `${diff.s
 
 const list = <T>(items: T[], render: (item: T, index: number) => string): string => (items.length ? items.map(render).join("\n") : "(none)");
 
-export function buildPrompt(review: Review, pr: PullRequest, followUp = false): string {
+const threadLine = (thread: Thread): string => `- ${thread.fingerprint} at \`${thread.path}${thread.line === null ? "" : `:${thread.line}`}\` [${thread.severity}] ${thread.title} (${thread.skills.join(", ") || "shrike"})`;
+
+export function buildPrompt(review: Review, pr: PullRequest, { threads = [], wontFix = [], previous = null, followUp = false }: ReviewContext = {}): string {
   const context = followUp
     ? `Same pull request and checkout as your previous review. The diff and the files you read are still in this conversation, so do not re-read them unless a rule below needs more context. Forget the previous review's rules and findings; apply only the review below.`
     : `Repository: ${pr.owner}/${pr.repo}
@@ -47,13 +60,22 @@ Description:
 ${pr.body?.trim() || "(none)"}
 
 The repository is checked out at the pull request head in your working directory. The diff at the end is the complete set of changes. Read any file you need for context with your tools. Do not modify files. Do not run commands that change state.`;
+  const memory = threads.length || wontFix.length || previous
+    ? `
+# Earlier runs on this pull request
+${previous ? `Previous decision: ${previous}\n` : ""}Open threads Shrike posted on earlier pushes, each with its fingerprint. Judge every one against the current code: fixed when the code no longer has the problem, open when it still does, wrong when the finding never held.
+${list(threads, (thread) => `${threadLine(thread)}${thread.replies.length ? `\n${thread.replies.map((reply) => `  ${reply.author} replied: ${reply.body.replace(/\s+/g, " ").slice(0, 500)}`).join("\n")}` : ""}`)}
+Threads a maintainer closed on purpose, do not report these again:
+${list(wontFix, threadLine)}
+`
+    : "";
   return `You are Shrike, an automated pull request reviewer, running the "${review.name}" review.
 
 ${context}
 
 # Review: ${review.name}
 ${review.body}
-
+${memory}
 # Output contract
 Finish with exactly one \`\`\`json fenced block and no text after it:
 {
@@ -69,13 +91,15 @@ Finish with exactly one \`\`\`json fenced block and no text after it:
       "body": "markdown explanation with the reasoning",
       "suggestion": "optional replacement for lines startLine..line, exact code, no fences"
     }
-  ]
+  ],
+  "threads": [{ "fingerprint": "<fingerprint from the list above>", "state": "fixed" | "open" | "wrong", "reason": "one sentence" }]
 }
 Rules:
 - "line" is a line number in the new version of the file and must appear in the diff below as an added or context line. Anything else belongs in "summary".
 - "startLine" is optional and only for multi-line ranges; "suggestion" replaces the whole range.
-- severity: error means must fix before merge, warning means should fix, info is a nit.
+- severity: error means broken in production or a security hole and fails the check, warning means fix before merge, info is a nit that never blocks.
 - verdict is fail if any error, warn if any warning, otherwise pass.
+- "threads" carries one entry for every open thread listed above${threads.length ? "" : ", so it is empty here"}. Do not repeat an open thread as a new finding.
 - Be specific and only report what you can justify from the code. No findings is a valid result.${followUp ? "" : `
 
 # Diff

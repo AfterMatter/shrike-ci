@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { PullRequest, PullRequestHistory } from "../src/github";
-import { buildCapturePlanPrompt, buildCaptureShotsPrompt, buildPrompt, buildShrikenPrompt, CAPTURE_PLAN_RETRY_PROMPT, CAPTURE_TAKEN_RETRY_PROMPT } from "../src/prompt";
+import { askReview, buildCapturePlanPrompt, buildCaptureShotsPrompt, buildPrompt, buildShrikenPrompt, CAPTURE_PLAN_RETRY_PROMPT, CAPTURE_TAKEN_RETRY_PROMPT, VERIFY_PROMPT } from "../src/prompt";
 import type { ReviewRun } from "../src/runner";
 
 const pr: PullRequest = { owner: "o", repo: "r", number: 4, title: "Add thing", body: "Closes #2\n![before](https://i/1)", author: "a", base: "main", head: "f", headSha: "abc", baseSha: "base", cloneUrl: "c", fork: false, private: false, files: [], diff: "+added line" };
@@ -120,5 +120,39 @@ describe("capture prompts", () => {
     expect(prompt).not.toContain("before.webm");
     expect(prompt).not.toContain("## Review: capture");
     expect(prompt).toContain("with one integer for each of code-review.");
+  });
+});
+
+describe("buildPrompt", () => {
+  const review = { name: "code-review", description: "d", body: "Rules." };
+  const thread = { id: "T1", fingerprint: "0123456789abcdef", path: "src/a.ts", line: 3, title: "Wrong count", severity: "warning" as const, skills: ["code-review"], resolved: false, closedByShrike: false, commentId: 11, commentNodeId: "C1", url: "u", replies: [{ id: 12, author: "bob", body: "intended,\n  see the docs" }] };
+
+  test("without earlier runs it carries no memory section and asks for an empty threads list", () => {
+    const prompt = buildPrompt(review, pr);
+    expect(prompt).not.toContain("# Earlier runs");
+    expect(prompt).toContain('"threads": [{ "fingerprint": "<fingerprint from the list above>", "state": "fixed" | "open" | "wrong", "reason": "one sentence" }]');
+    expect(prompt).toContain("one entry for every open thread listed above, so it is empty here. Do not repeat an open thread as a new finding.");
+    expect(prompt).toContain("error means broken in production or a security hole and fails the check, warning means fix before merge, info is a nit that never blocks");
+    expect(prompt).toContain("# Diff\n```diff\n+added line\n```");
+  });
+
+  test("with earlier runs it lists the open threads with their fingerprints and human replies, the closed ones, and the previous decision", () => {
+    const wontFix = { ...thread, fingerprint: "fedcba9876543210", title: "Nit", resolved: true, replies: [] };
+    const prompt = buildPrompt(review, pr, { threads: [thread], wontFix: [wontFix], previous: "Merge it, the count decides it." });
+    expect(prompt).toContain("# Earlier runs on this pull request\nPrevious decision: Merge it, the count decides it.\nOpen threads Shrike posted on earlier pushes");
+    expect(prompt).toContain("- 0123456789abcdef at `src/a.ts:3` [warning] Wrong count (code-review)\n  bob replied: intended, see the docs");
+    expect(prompt).toContain("Threads a maintainer closed on purpose, do not report these again:\n- fedcba9876543210 at `src/a.ts:3` [warning] Nit (code-review)");
+    expect(prompt).toContain('"threads" carries one entry for every open thread listed above. Do not repeat');
+    expect(buildPrompt(review, pr, { threads: [thread], followUp: true })).not.toContain("# Diff");
+    expect(buildPrompt(review, pr, { threads: [{ ...thread, line: null, skills: [] }] })).toContain("- 0123456789abcdef at `src/a.ts` [warning] Wrong count (shrike)");
+  });
+
+  test("the verify turn asks to confirm, downgrade or drop and to keep the judgements, and the ask review can answer inside a thread", () => {
+    expect(VERIFY_PROMPT).toContain("Re-read each finding at its file and line");
+    expect(VERIFY_PROMPT).toContain("drop it when it cannot be justified");
+    expect(VERIFY_PROMPT).toContain("Keep the thread judgements");
+    expect(askReview("why?").body).toBe("A maintainer asked in a pull request comment:\n\nwhy?\n\nDo what the comment asks. Put the answer in the summary and report only the findings the comment calls for.");
+    const inThread = askReview("why?", thread).body;
+    expect(inThread).toStartWith('A maintainer asked in a pull request comment in the thread at `src/a.ts:3` about "Wrong count":\n\nwhy?\n\nThe thread so far:\n- bob: intended,\n  see the docs\n\nDo what the comment asks. Put the answer in the summary, written as a reply in that thread, and report only');
   });
 });
