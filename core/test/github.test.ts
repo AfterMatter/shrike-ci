@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { Octokit } from "octokit";
-import { headline, imagesOf, isOwnRun, jobIdOf, mentionedNumbers, PullRequestClient, REFRESH_MARGIN_MS, refreshingAuth, renderReviewBody, splitFlagged, STATUS_MARKER, threadOf, type PullRequestFile } from "../src/github";
+import { headline, imagesOf, isOwnRun, jobIdOf, mentionedNumbers, PullRequestClient, REFRESH_MARGIN_MS, refreshingAuth, splitFlagged, STATUS_MARKER, threadOf, type PullRequestFile } from "../src/github";
 import type { Finding } from "../src/report";
 import { renderThread, replyBody, type Flagged } from "../src/threads";
 
@@ -64,11 +64,6 @@ describe("splitFlagged", () => {
 });
 
 describe("rendering", () => {
-  test("the review body counts the threads and says they close themselves", () => {
-    expect(renderReviewBody(1)).toBe("## Shrike\n\n1 new problem in this push, one thread each. Threads close themselves once a later push fixes them.");
-    expect(renderReviewBody(3)).toContain("3 new problems");
-  });
-
   test("a thread node becomes a thread only when its first comment carries a fingerprint", () => {
     const first = { id: "C1", databaseId: 11, body: renderThread(flagged({ severity: "error" }, ["code-review", "cleanup"]), "b"), url: "https://gh/c/11", author: { login: "shrike[bot]" } };
     const node = { id: "T1", isResolved: false, path: "a.ts", line: 3, comments: { nodes: [first, { id: "C2", databaseId: 12, body: "not really", url: "u", author: { login: "bob" } }, { id: "C3", databaseId: 13, body: replyBody("Here is why."), url: "u", author: null }] } };
@@ -151,12 +146,14 @@ describe("PullRequestClient", () => {
     const threads = [{ path: "a.ts", line: 2, startLine: 1, body: "<!-- shrike:finding 0123456789abcdef -->\n**[warning] t** · code-review\n\nb" }, { path: "b.ts", line: 5, body: "<!-- shrike:finding fedcba9876543210 -->\n**[error] u** · cleanup\n\nc" }];
     expect(await client.postReview(pr, threads)).toEqual({ id: 1, url: "https://gh/review/1" });
     const review = calls.find((c) => c.method === "createReview")!.args;
-    expect(review).toMatchObject({ owner: "o", repo: "r", pull_number: 2, commit_id: "abc", event: "COMMENT", body: renderReviewBody(2) });
+    expect(review).toMatchObject({ owner: "o", repo: "r", pull_number: 2, commit_id: "abc", event: "COMMENT", body: "2 new problems in this push." });
     expect(review.comments).toEqual([
       { path: "a.ts", line: 2, side: "RIGHT", start_line: 1, start_side: "RIGHT", body: threads[0]!.body },
       { path: "b.ts", line: 5, side: "RIGHT", body: threads[1]!.body },
     ]);
     expect(calls.filter((c) => c.method === "createReview")).toHaveLength(1);
+    await client.postReview(pr, threads.slice(0, 1));
+    expect(calls.findLast((c) => c.method === "createReview")!.args.body).toBe("1 new problem in this push.");
 
     const retryCalls: Call[] = [];
     let attempts = 0;
@@ -171,7 +168,7 @@ describe("PullRequestClient", () => {
     const reviews = retryCalls.filter((c) => c.method === "createReview");
     expect(reviews).toHaveLength(2);
     expect(reviews[1]!.args.comments).toBeUndefined();
-    expect(reviews[1]!.args.body).toContain("- `a.ts:2`\n**[warning] t** · code-review");
+    expect(reviews[1]!.args.body).toStartWith("2 new problems in this push.\n\n- `a.ts:2`\n**[warning] t** · code-review");
     expect(reviews[1]!.args.body).not.toContain("shrike:finding");
 
     const fatal = fakeOctokit([], { createReview: () => { throw Object.assign(new Error("Forbidden"), { status: 403 }); } });

@@ -154,8 +154,6 @@ export function imagesOf(body: string, cap = 12): Image[] {
   return images.slice(0, cap);
 }
 
-export const renderReviewBody = (count: number): string => `## Shrike\n\n${count} new ${count === 1 ? "problem" : "problems"} in this push, one thread each. Threads close themselves once a later push fixes them.`;
-
 export function splitFlagged(flagged: Flagged[], files: PullRequestFile[]): { inline: Flagged[]; outside: Flagged[] } {
   const lines = new Map(files.map((f) => [f.path, f.lines]));
   const inline: Flagged[] = [];
@@ -240,7 +238,7 @@ export class PullRequestClient {
   }
 
   async postReview(pr: PullRequest, threads: { path: string; line: number; startLine?: number; body: string }[]): Promise<{ id: number; url: string }> {
-    const base = { owner: pr.owner, repo: pr.repo, pull_number: pr.number, commit_id: pr.headSha, event: "COMMENT" as const, body: renderReviewBody(threads.length) };
+    const base = { owner: pr.owner, repo: pr.repo, pull_number: pr.number, commit_id: pr.headSha, event: "COMMENT" as const, body: `${threads.length} new ${threads.length === 1 ? "problem" : "problems"} in this push.` };
     const comments = threads.map((thread) => ({
       path: thread.path,
       line: thread.line,
