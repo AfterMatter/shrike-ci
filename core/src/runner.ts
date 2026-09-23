@@ -1,5 +1,6 @@
 // Runs a job: the reviews in parallel fresh sessions or one shared session,
 // the thread lifecycle, the capture, Shriken, then autofix. Keeps one card current.
+import { randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -23,6 +24,7 @@ export interface Turn {
 
 export interface ReviewRun {
   review: string;
+  key?: string;
   backend: string;
   model: string;
   status: "queued" | "running" | "done" | "error";
@@ -40,7 +42,8 @@ export interface RunRecord {
   sha: string;
   trigger: string;
   review: string;
-  status: string;
+  key?: string;
+  status: ReviewRun["status"];
   verdict?: string;
   tokens: number;
   cost: number;
@@ -63,6 +66,7 @@ export interface RunDeps {
   parallel?: number;
   log: (line: string) => void;
   onRun?: (run: ReviewRun, pr: PullRequest) => Promise<void>;
+  live?: { throttleMs: number; beatMs: number };
   autofix?: AutofixDeps;
   capture?: CaptureDeps;
 }
@@ -80,6 +84,7 @@ const RESERVED: Record<string, string> = {
 };
 const OWN = new Set([SHRIKEN, CAPTURE, AUTOFIX]);
 const PROMPT_KEEP = 20_000;
+const LIVE = { throttleMs: 3000, beatMs: 60_000 };
 const RANK: Record<Report["verdict"], number> = { pass: 0, warn: 1, fail: 2 };
 const SEVERITY: Record<OpenItem["severity"], number> = { info: 0, warning: 1, error: 2 };
 
@@ -88,6 +93,7 @@ export const runRecord = (job: Job, run: ReviewRun, pr: PullRequest): RunRecord 
   sha: pr.headSha,
   trigger: job.trigger,
   review: run.review,
+  key: run.key,
   status: run.status,
   verdict: run.report?.verdict,
   tokens: run.usage?.tokens ?? 0,
@@ -185,9 +191,28 @@ export async function runJob(job: Job, deps: RunDeps): Promise<ReviewRun[]> {
   const step = async (run: ReviewRun, work: (opened: (options?: OpenOptions) => Promise<Opened>, check: CheckHandle) => Promise<void>) => {
     run.status = "running";
     run.startedAt = new Date().toISOString();
+    run.key = randomUUID();
     deps.log(`[${run.review}] starting with ${run.backend}/${run.model}${shared ? " in the shared session" : ""}`);
     await post();
+    const { throttleMs, beatMs } = deps.live ?? LIVE;
+    let wire = Promise.resolve();
+    let failed = false;
+    let sent = { turns: 0, at: Date.now() };
+    const send = () =>
+      (wire = wire
+        .then(() => (run.status === "running" ? deps.onRun?.(run, pr) : undefined))
+        .catch((error) => {
+          if (!failed) deps.log(`[${run.review}] could not report the running run: ${error instanceof Error ? error.message : String(error)}`);
+          failed = true;
+        }));
+    send();
     const check = await deps.gh.startCheck(pr, run.review);
+    const ticker = setInterval(() => {
+      const turns = run.transcript?.length ?? 0;
+      if (turns === sent.turns && Date.now() - sent.at < beatMs) return;
+      sent = { turns, at: Date.now() };
+      send();
+    }, throttleMs);
     let session: AgentSession | undefined;
     try {
       await work(async (options = {}) => {
@@ -203,10 +228,12 @@ export async function runJob(job: Job, deps: RunDeps): Promise<ReviewRun[]> {
       await check.finish("failure", `Shrike could not complete this ${run.review === SHRIKEN ? "summary" : run.review === AUTOFIX ? "fix" : run.review === CAPTURE ? "capture" : "review"}`, run.error);
       if (session === shared) shared = undefined;
     } finally {
+      clearInterval(ticker);
       if (session && session !== shared) await session.close().catch(() => {});
     }
     run.finishedAt = new Date().toISOString();
     await post();
+    await wire;
     await deps.onRun?.(run, pr).catch((error) => deps.log(`[${run.review}] could not report the run: ${error instanceof Error ? error.message : String(error)}`));
   };
   const judged: Judgement[][] = [];

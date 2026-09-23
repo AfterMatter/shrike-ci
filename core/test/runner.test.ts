@@ -83,6 +83,7 @@ interface Fixtures {
   threads?: Thread[];
   previous?: string;
   closeFails?: boolean;
+  promptDelayMs?: number;
   onFix?: (cwd: string) => Promise<void>;
   onShots?: (side: "before" | "after", captureDir: string, url: string) => Promise<void>;
 }
@@ -103,7 +104,7 @@ function fakes(replies: Record<string, string[]>, pr: PullRequest, fixtures: Fix
       return {
         async prompt(text) {
           session.prompts.push(text);
-          await new Promise((resolve) => setTimeout(resolve, 1));
+          await new Promise((resolve) => setTimeout(resolve, fixtures.promptDelayMs ?? 1));
           const review = nameOf(text) ?? nameOf(session.prompts.findLast((p) => nameOf(p) !== undefined)!)!;
           const reply = (replies[review] ?? [])[answered[review] ?? 0];
           answered[review] = (answered[review] ?? 0) + 1;
@@ -180,7 +181,7 @@ describe("runJob", () => {
     const seen: [string, string][] = [];
     const runs = await runJob(
       { owner: "o", repo: "r", pr: 1, trigger: "pull_request", reviews: [] },
-      { gh, backend, settings: settings({ reviews: THREE }), reviews, cwd: dir, site: "https://shrike.example/", log: () => {}, onRun: async (run) => void seen.push([run.review, run.status]) },
+      { gh, backend, settings: settings({ reviews: THREE }), reviews, cwd: dir, site: "https://shrike.example/", log: () => {}, onRun: async (run) => void (run.status !== "running" && seen.push([run.review, run.status])) },
     );
     expect(runs.map((r) => [r.review, r.status, r.report?.verdict])).toEqual([
       ["slop-review", "done", "warn"],
@@ -610,7 +611,7 @@ describe("runJob", () => {
     const logs: string[] = [];
     const failedRuns = await runJob(
       { owner: "o", repo: "r", pr: 1, trigger: "comment", reviews: ["code-review"] },
-      { gh: failed.gh, backend: failed.backend, settings: settings(), reviews, cwd: dir, log: (line) => logs.push(line), onRun: async (run) => void seen.push([run.review, run.status]) },
+      { gh: failed.gh, backend: failed.backend, settings: settings(), reviews, cwd: dir, log: (line) => logs.push(line), onRun: async (run) => void (run.status !== "running" && seen.push([run.review, run.status])) },
     );
     expect(failedRuns.map((r) => [r.review, r.status])).toEqual([
       ["code-review", "done"],
@@ -639,7 +640,7 @@ describe("runJob", () => {
     const logs: string[] = [];
     const runs = await runJob(
       { owner: "o", repo: "r", pr: 1, trigger: "comment", reviews: ["code-review"] },
-      { gh: refused.gh, backend: refused.backend, settings: settings(), reviews, cwd: dir, log: (line) => logs.push(line), onRun: async (run) => void seen.push([run.review, run.status]) },
+      { gh: refused.gh, backend: refused.backend, settings: settings(), reviews, cwd: dir, log: (line) => logs.push(line), onRun: async (run) => void (run.status !== "running" && seen.push([run.review, run.status])) },
     );
     expect(runs.map((r) => [r.review, r.status, r.error])).toEqual([
       ["code-review", "done", undefined],
@@ -663,7 +664,7 @@ describe("runJob", () => {
     const reported: [string, string | undefined][] = [];
     const recoveredRuns = await runJob(
       { owner: "o", repo: "r", pr: 1, trigger: "comment", reviews: ["code-review"] },
-      { gh: recovered.gh, backend: recovered.backend, settings: settings(), reviews, cwd: dir, log: () => {}, onRun: async (run) => void reported.push([run.review, run.report?.summary]) },
+      { gh: recovered.gh, backend: recovered.backend, settings: settings(), reviews, cwd: dir, log: () => {}, onRun: async (run) => void (run.status !== "running" && reported.push([run.review, run.report?.summary])) },
     );
     expect(recoveredRuns.map((r) => [r.review, r.status])).toEqual([
       ["code-review", "done"],
@@ -742,7 +743,7 @@ describe("runJob", () => {
         cwd: dir,
         log: (line) => logs.push(line),
         onRun: async (run, seenPr) => {
-          seen.push([run.review, run.status, seenPr.number]);
+          if (run.status !== "running") seen.push([run.review, run.status, seenPr.number]);
           if (run.review === "code-review") throw new Error("db down");
         },
       },
@@ -771,6 +772,168 @@ describe("runJob", () => {
     await runJob({ owner: "o", repo: "r", pr: 7, trigger: "comment", reviews: ["cleanup"] }, { gh, backend, settings: settings({ shriken: false }), reviews, cwd: work, log: () => {} });
     expect(await git(work, ["rev-parse", "HEAD"])).toBe(headSha);
     expect(await Bun.file(join(work, "f.txt")).text()).toBe("x");
+  });
+});
+
+describe("live reporting", () => {
+  test("every report of a run carries the same key, and different runs get different keys", async () => {
+    const { dir, sha } = await repoAtHead();
+    const pr = prAt(dir, sha);
+    const { backend, gh } = fakes({ "code-review": [report("pass")], "slop-review": [report("pass")] }, pr);
+    const keys: Record<string, Set<string | undefined>> = {};
+    await runJob(
+      { owner: "o", repo: "r", pr: 1, trigger: "pull_request", reviews: [] },
+      { gh, backend, settings: settings({ reviews: ["code-review", "slop-review"], shriken: false }), reviews, cwd: dir, log: () => {}, onRun: async (run) => void (keys[run.review] ??= new Set()).add(run.key) },
+    );
+    expect(Object.values(keys).every((own) => own.size === 1)).toBe(true);
+    const [codeKey] = [...keys["code-review"]!];
+    const [slopKey] = [...keys["slop-review"]!];
+    expect(codeKey).toMatch(/^[0-9a-f-]{36}$/);
+    expect(codeKey).not.toBe(slopKey);
+  });
+
+  test("the first report of a run is running with no finishedAt, the last is done or error with finishedAt", async () => {
+    const { dir, sha } = await repoAtHead();
+    const pr = prAt(dir, sha);
+    const { backend, gh } = fakes({ "code-review": [report("pass")], "slop-review": ["nope", "nope"] }, pr);
+    const byReview: Record<string, { status: string; finishedAt?: string }[]> = {};
+    await runJob(
+      { owner: "o", repo: "r", pr: 1, trigger: "pull_request", reviews: [] },
+      { gh, backend, settings: settings({ reviews: ["code-review", "slop-review"], shriken: false }), reviews, cwd: dir, log: () => {}, onRun: async (run) => void (byReview[run.review] ??= []).push({ status: run.status, finishedAt: run.finishedAt }) },
+    );
+    for (const own of Object.values(byReview)) {
+      expect(own[0]).toEqual({ status: "running", finishedAt: undefined });
+      expect(["done", "error"]).toContain(own.at(-1)!.status);
+      expect(own.at(-1)!.finishedAt).toBeDefined();
+    }
+  });
+
+  test("nothing is reported for a run after its final report", async () => {
+    const { dir, sha } = await repoAtHead();
+    const pr = prAt(dir, sha);
+    const { backend, gh } = fakes({ "code-review": [report("pass")] }, pr);
+    const closed = new Set<string>();
+    let afterFinal = 0;
+    await runJob(
+      { owner: "o", repo: "r", pr: 1, trigger: "comment", reviews: ["code-review"] },
+      {
+        gh,
+        backend,
+        settings: settings({ shriken: false }),
+        reviews,
+        cwd: dir,
+        log: () => {},
+        onRun: async (run) => {
+          if (closed.has(run.review)) afterFinal++;
+          if (run.status !== "running") closed.add(run.review);
+        },
+      },
+    );
+    expect(afterFinal).toBe(0);
+  });
+
+  test("turns that land within one throttle window go out as one live report, and the final report carries the whole transcript", async () => {
+    const { dir, sha } = await repoAtHead();
+    const pr = prAt(dir, sha);
+    const { backend, gh } = fakes({ "code-review": [report("fail"), report("fail")] }, pr, { promptDelayMs: 30 });
+    const live: number[] = [];
+    let final: number | undefined;
+    await runJob(
+      { owner: "o", repo: "r", pr: 1, trigger: "comment", reviews: ["code-review"] },
+      {
+        gh,
+        backend,
+        settings: settings({ shriken: false }),
+        reviews,
+        cwd: dir,
+        log: () => {},
+        live: { throttleMs: 10, beatMs: 100_000 },
+        onRun: async (run) => {
+          if (run.status === "running") live.push(run.transcript?.length ?? 0);
+          if (run.status === "done") final = run.transcript?.length;
+        },
+      },
+    );
+    expect(live[0]).toBe(0);
+    expect(live).toContain(1);
+    expect(live).toContain(3);
+    expect(new Set(live).size).toBe(live.length);
+    expect(final).toBe(4);
+  });
+
+  test("a failing report never fails the review, a live failure is logged once, and the final report is still sent", async () => {
+    const { dir, sha } = await repoAtHead();
+    const pr = prAt(dir, sha);
+    const { backend, gh } = fakes({ "code-review": [report("fail"), report("fail")] }, pr, { promptDelayMs: 20 });
+    const logs: string[] = [];
+    const statuses: string[] = [];
+    const runs = await runJob(
+      { owner: "o", repo: "r", pr: 1, trigger: "comment", reviews: ["code-review"] },
+      {
+        gh,
+        backend,
+        settings: settings({ shriken: false }),
+        reviews,
+        cwd: dir,
+        log: (line) => logs.push(line),
+        live: { throttleMs: 2, beatMs: 100_000 },
+        onRun: async (run) => {
+          statuses.push(run.status);
+          throw new Error("api down");
+        },
+      },
+    );
+    expect(runs[0]!.status).toBe("done");
+    expect(statuses.filter((status) => status === "running").length).toBeGreaterThan(1);
+    expect(statuses.at(-1)).toBe("done");
+    expect(logs.filter((line) => line === "[code-review] could not report the running run: api down")).toHaveLength(1);
+    expect(logs.filter((line) => line === "[code-review] could not report the run: api down")).toHaveLength(1);
+  });
+
+  test("a heartbeat reports a quiet run again only once the beat is due", async () => {
+    const quiet = async (beatMs: number) => {
+      const { dir, sha } = await repoAtHead();
+      const pr = prAt(dir, sha);
+      const { backend, gh } = fakes({ "code-review": [report("pass")] }, pr, { promptDelayMs: 120 });
+      const lengths: number[] = [];
+      await runJob(
+        { owner: "o", repo: "r", pr: 1, trigger: "comment", reviews: ["code-review"] },
+        { gh, backend, settings: settings({ shriken: false }), reviews, cwd: dir, log: () => {}, live: { throttleMs: 5, beatMs }, onRun: async (run) => void (run.status === "running" && lengths.push(run.transcript?.length ?? 0)) },
+      );
+      return lengths.filter((length) => length === 1).length;
+    };
+    expect(await quiet(20)).toBeGreaterThanOrEqual(3);
+    expect(await quiet(100_000)).toBe(1);
+  });
+
+  test("a live report queued behind a slow API never goes out once the run has finished", async () => {
+    const { dir, sha } = await repoAtHead();
+    const pr = prAt(dir, sha);
+    const { backend, gh } = fakes({ "code-review": [report("fail"), report("fail")], "slop-review": ["nope", "nope"] }, pr, { promptDelayMs: 5 });
+    const reports: Record<string, { status: string; finishedAt?: string }[]> = {};
+    await runJob(
+      { owner: "o", repo: "r", pr: 1, trigger: "pull_request", reviews: [] },
+      {
+        gh,
+        backend,
+        settings: settings({ reviews: ["code-review", "slop-review"], shriken: false }),
+        reviews,
+        cwd: dir,
+        log: () => {},
+        live: { throttleMs: 1, beatMs: 2 },
+        onRun: async (run) => {
+          (reports[run.review] ??= []).push({ status: run.status, finishedAt: run.finishedAt });
+          await new Promise((resolve) => setTimeout(resolve, 25));
+        },
+      },
+    );
+    expect(Object.keys(reports).sort()).toEqual(["code-review", "slop-review"]);
+    for (const own of Object.values(reports)) {
+      expect(own.filter((one) => one.status !== "running")).toHaveLength(1);
+      expect(own.at(-1)!.status).not.toBe("running");
+      expect(own.at(-1)!.finishedAt).toBeDefined();
+      expect(own.slice(0, -1).every((one) => one.status === "running" && one.finishedAt === undefined)).toBe(true);
+    }
   });
 });
 
@@ -811,7 +974,7 @@ describe("autofix", () => {
         reviews,
         cwd: dir,
         log: () => {},
-        onRun: async (run) => void seen.push([run.review, run.status, run.report?.verdict]),
+        onRun: async (run) => void (run.status !== "running" && seen.push([run.review, run.status, run.report?.verdict])),
         autofix: autofix(bare, asked),
       },
     );
