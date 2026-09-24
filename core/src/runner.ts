@@ -53,6 +53,7 @@ export interface RunRecord {
   startedAt?: string;
   finishedAt?: string;
   transcript: Turn[];
+  actionsRun?: string;
 }
 
 export interface RunDeps {
@@ -69,6 +70,7 @@ export interface RunDeps {
   live?: { throttleMs: number; beatMs: number };
   autofix?: AutofixDeps;
   capture?: CaptureDeps;
+  actionsRun?: string;
 }
 
 type Opened = { session: AgentSession; followUp: boolean };
@@ -88,7 +90,7 @@ const LIVE = { throttleMs: 3000, beatMs: 60_000 };
 const RANK: Record<Report["verdict"], number> = { pass: 0, warn: 1, fail: 2 };
 const SEVERITY: Record<OpenItem["severity"], number> = { info: 0, warning: 1, error: 2 };
 
-export const runRecord = (job: Job, run: ReviewRun, pr: PullRequest): RunRecord => ({
+export const runRecord = (job: Job, run: ReviewRun, pr: PullRequest, actionsRun?: string): RunRecord => ({
   pr: pr.number,
   sha: pr.headSha,
   trigger: job.trigger,
@@ -104,6 +106,7 @@ export const runRecord = (job: Job, run: ReviewRun, pr: PullRequest): RunRecord 
   startedAt: run.startedAt,
   finishedAt: run.finishedAt,
   transcript: run.transcript ?? [],
+  actionsRun,
 });
 
 export const checkTitle = (verdict: Report["verdict"], findings: Finding[]): string => {

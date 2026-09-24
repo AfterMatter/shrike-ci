@@ -10,7 +10,7 @@ import { patchId } from "../src/diff";
 import { STATUS_MARKER, type CheckRun, type MediaFile, type PullRequest, type PullRequestClient, type PullRequestHistory } from "../src/github";
 import { VERIFY_PROMPT } from "../src/prompt";
 import type { Finding, Report } from "../src/report";
-import { runJob } from "../src/runner";
+import { runJob, runRecord } from "../src/runner";
 import { resolveSettings, type Review } from "../src/settings";
 import { fingerprintOf, type Thread } from "../src/threads";
 
@@ -172,6 +172,23 @@ function fakes(replies: Record<string, string[]>, pr: PullRequest, fixtures: Fix
   } as unknown as PullRequestClient;
   return { trace, backend, gh };
 }
+
+describe("runRecord", () => {
+  const job = { owner: "o", repo: "r", pr: 1, trigger: "action" as const, reviews: [] };
+  const run = { review: "code-review", backend: "fake", model: "fake/default", status: "done" as const };
+
+  test("carries actionsRun when given", async () => {
+    const { dir, sha } = await repoAtHead();
+    const record = runRecord(job, run, prAt(dir, sha), "123456789.1");
+    expect(record.actionsRun).toBe("123456789.1");
+  });
+
+  test("omits actionsRun when not given", async () => {
+    const { dir, sha } = await repoAtHead();
+    const record = runRecord(job, run, prAt(dir, sha));
+    expect(record.actionsRun).toBeUndefined();
+  });
+});
 
 describe("runJob", () => {
   test("runs the reviews in parallel fresh sessions, verifies the ones with findings, posts one review, then shriken last", async () => {

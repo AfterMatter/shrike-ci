@@ -33,6 +33,9 @@ const identity = await asApp();
 console.log(`posting as ${identity.name}${identity.expiresAt ? "" : ", install the Shrike GitHub App on this repository to post as Shrike"}`);
 
 const cwd = resolve(env("GITHUB_WORKSPACE") ?? process.cwd());
+const runId = env("GITHUB_RUN_ID");
+const runAttempt = env("GITHUB_RUN_ATTEMPT");
+const actionsRun = runId && runAttempt ? `${runId}.${runAttempt}` : undefined;
 const runs = await runJob(job, {
   gh: new PullRequestClient(new Octokit({ authStrategy: refreshingAuth(asApp, identity) })),
   backend: getBackend(settings.backend),
@@ -42,9 +45,10 @@ const runs = await runJob(job, {
   token: identity.token,
   site: apiUrl,
   log: (line) => console.log(line),
-  onRun: (run, pr) => api.report(runRecord(job, run, pr)),
+  onRun: (run, pr) => api.report(runRecord(job, run, pr, actionsRun)),
   autofix: { identity: () => api.installationToken(), ownRunId: env("GITHUB_RUN_ID") },
   capture: { identity: asApp },
+  actionsRun,
 });
 
 const reportsDir = join(env("RUNNER_TEMP") ?? cwd, "shrike-reports");
