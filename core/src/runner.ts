@@ -13,7 +13,7 @@ import { globMatches, patchId } from "./diff";
 import { conclusionOf, headline, splitFlagged, STATUS_MARKER, type CheckHandle, type MediaFile, type PullRequest, type PullRequestClient } from "./github";
 import type { Job } from "./job";
 import { ASK, askReview, AUTOFIX_RETRY_PROMPT, buildAutofixPrompt, buildCapturePlanPrompt, buildCaptureShotsPrompt, buildPrompt, buildShrikenPrompt, CAPTURE_PLAN_RETRY_PROMPT, CAPTURE_TAKEN_RETRY_PROMPT, RETRY_PROMPT, SHRIKEN_RETRY_PROMPT, VERIFY_PROMPT } from "./prompt";
-import { parseReport, parseShriken, parseShrikenCall, shrikenReferences, topFinding, verdictOf, type Capture, type Finding, type Judgement, type Report } from "./report";
+import { checkShriken, parseReport, parseShriken, parseShrikenCall, shrikenReferences, topFinding, verdictOf, type Capture, type Finding, type Judgement, type Report } from "./report";
 import type { AutofixMode, Review, Settings } from "./settings";
 import { flag, judge, lineReader, renderThread, type Flagged, type Thread } from "./threads";
 
@@ -137,9 +137,10 @@ async function ask<T>(run: ReviewRun, session: AgentSession, prompt: string, ret
   try {
     return parse(first.text);
   } catch (error) {
-    log(`[${run.review}] ${error instanceof Error ? error.message : String(error)}, asking again`);
-    said(run, "prompt", retry);
-    const second = await session.prompt(retry);
+    const problem = error instanceof Error ? error.message : String(error);
+    log(`[${run.review}] ${problem}, asking again`);
+    said(run, "prompt", `${retry}\nWhat was wrong: ${problem}.`);
+    const second = await session.prompt(`${retry}\nWhat was wrong: ${problem}.`);
     said(run, "reply", second.text);
     run.usage = second.usage;
     return parse(second.text);
@@ -385,6 +386,7 @@ export async function runJob(job: Job, deps: RunDeps): Promise<ReviewRun[]> {
         const scored = runs.filter((own) => own.report && own.review !== CAPTURE).map((own) => own.review);
         const { summary, decision, scores } = await ask(run, session, buildShrikenPrompt(pr, await deps.gh.history(pr), runs), SHRIKEN_RETRY_PROMPT, (text) => {
           const parsed = parseShriken(text);
+          checkShriken(parsed);
           if (!shrikenReferences(parsed).length) throw new Error("summary carries no references");
           return { summary: parsed, ...parseShrikenCall(text, scored) };
         }, deps.log);

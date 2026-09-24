@@ -27,7 +27,7 @@ describe("buildShrikenPrompt", () => {
     expect(prompt).toContain("## Review: code-review\nVerdict: warn\nSummary: Mostly fine.\n1. a.ts:2-3 [warning] Rename\nUse a clearer name.\n```suggestion\nconst total = 1;\n```\n2. b.ts:9 [info] Nit\nTrailing space.");
     expect(prompt).not.toContain("slop-review");
     expect(prompt).toContain("# Diff\n```diff\n+added line\n```");
-    expect(prompt).toContain("```markdown fenced block, then the ```json block, and nothing after it");
+    expect(prompt).toContain("````markdown fenced block of four backticks, so the ``` blocks inside it stay whole, then the ```json block, and nothing after it");
     expect(prompt).not.toContain('"findings"');
     expect(prompt).not.toContain("Also at");
   });

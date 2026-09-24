@@ -104,12 +104,46 @@ export const parseReport = (text: string): Report => {
 };
 
 export function parseShriken(text: string): string {
+  const fenced = [...text.matchAll(/````markdown\n([\s\S]*?)\n````/g)].at(-1)?.[1];
   const open = text.lastIndexOf("```markdown");
   const json = text.lastIndexOf("```json");
   const close = text.lastIndexOf("```", json > open ? json - 1 : text.length);
-  const document = (open >= 0 && close > open ? text.slice(open + "```markdown".length, close) : text).trim();
+  const document = (fenced ?? (open >= 0 && close > open ? text.slice(open + "```markdown".length, close) : text)).trim();
   if (!document) throw new Error("no markdown document found");
   return document;
+}
+
+export function checkShriken(document: string): void {
+  const kinds: ("prose" | "label" | "code" | "image")[] = [];
+  let inside = false;
+  let paragraph = "";
+  const flush = () => {
+    const text = paragraph.trim();
+    if (text) kinds.push(/^!\[[^\]]*\]\([^)]*\)$/.test(text) ? "image" : /\p{L}/u.test(text.replace(REFERENCE, "")) ? "prose" : "label");
+    paragraph = "";
+  };
+  for (const line of document.split("\n")) {
+    if (line.trimStart().startsWith("```")) {
+      if (!inside) (flush(), kinds.push("code"));
+      inside = !inside;
+    } else if (!inside) line.trim() ? (paragraph += `${line}\n`) : flush();
+  }
+  flush();
+  const prose = kinds.filter((kind) => kind === "prose").length;
+  const problem = inside
+    ? "a code block is never closed"
+    : prose < 2 || prose > 3
+      ? `the summary has ${prose} paragraphs instead of two or three`
+      : kinds.includes("label")
+        ? "a line holds only reference tokens; put each token inside the sentence it supports"
+        : kinds.at(-1) !== "prose"
+          ? "the summary must end with the paragraph that takes a position, after every block"
+          : kinds.filter((kind) => kind === "code" || kind === "image").length > 3
+            ? "the summary has more than three blocks"
+            : kinds.some((kind, at) => kind !== "prose" && kinds[at - 1] !== "prose" && !(kind === "image" && kinds[at - 1] === "image"))
+              ? "every block must come right after the sentence that introduces it"
+              : null;
+  if (problem) throw new Error(problem);
 }
 
 export function parseShrikenCall(text: string, reviews: string[]): { decision: NonNullable<Report["decision"]>; scores: Record<string, number> } {

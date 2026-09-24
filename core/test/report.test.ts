@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { parseReport, parseShriken, parseShrikenCall, shrikenReferences } from "../src/report";
+import { checkShriken, parseReport, parseShriken, parseShrikenCall, shrikenReferences } from "../src/report";
 
 const valid = { summary: "fine", verdict: "pass" as const, findings: [] };
 
@@ -72,6 +72,7 @@ describe("parseShriken", () => {
     const document = "# Title\n\n```ts\nconst x = 1;\n```\n\n```diff\n- a\n+ b\n```\n\nEnd.";
     expect(parseShriken(`\`\`\`markdown\n${document}\n\`\`\``)).toBe(document);
     expect(parseShriken("draft:\n```markdown\nold\n```\nfinal:\n```markdown\nnew\n```")).toBe("new");
+    expect(parseShriken("````markdown\nSee:\n\n```diff\n+x\n```\n\nDone.\n````\n```json\n{}\n```")).toBe("See:\n\n```diff\n+x\n```\n\nDone.");
   });
 
   test("falls back to the whole text and rejects empty answers", () => {
@@ -80,6 +81,23 @@ describe("parseShriken", () => {
     expect(() => parseShriken("")).toThrow(/no markdown document/);
     expect(() => parseShriken("   \n")).toThrow(/no markdown document/);
     expect(() => parseShriken("```markdown\n\n```")).toThrow(/no markdown document/);
+  });
+});
+
+describe("checkShriken", () => {
+  const ok = "What it does [file:a.ts:1]:\n\n```diff\n+x\n```\n\nWhat matters [review:a].\n\nMerge it [review:a].";
+
+  test("accepts paragraphs with each block after its sentence and the position last", () => {
+    expect(() => checkShriken(ok)).not.toThrow();
+    expect(() => checkShriken("Before and after [review:a]:\n\n![before](b.png)\n\n![after](a.png)\n\nMerge it.")).not.toThrow();
+  });
+
+  test("refuses the shapes that break the page", () => {
+    expect(() => checkShriken("One paragraph only.")).toThrow("1 paragraphs");
+    expect(() => checkShriken("Does a thing.\n\nMerge it.\n\n```diff\n+x\n```")).toThrow("end with the paragraph that takes a position");
+    expect(() => checkShriken("Does a thing.\n\n[file:a.ts:7]\n```diff\n+x\n```\n\nMerge it.")).toThrow("only reference tokens");
+    expect(() => checkShriken("Does a thing:\n\n```diff\n+x\n```\n\n```suggestion\ny\n```\n\nMerge it.")).toThrow("right after the sentence");
+    expect(() => checkShriken("Does a thing:\n\n```diff\n+x\n```\n```\n\nMerge it.")).toThrow("never closed");
   });
 });
 
