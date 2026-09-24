@@ -6,6 +6,13 @@ export interface AgentReply {
   usage: { tokens: number; cost: number };
 }
 
+export interface ToolCall {
+  id: string;
+  kind?: string;
+  title?: string;
+  output?: string;
+}
+
 export interface AgentSession {
   prompt(text: string): Promise<AgentReply>;
   close(): Promise<void>;
@@ -18,10 +25,25 @@ export interface SessionOptions {
   write?: boolean;
   captureDir?: string;
   log: (line: string) => void;
+  tool?: (call: ToolCall) => void;
 }
 
 export interface Backend {
   readonly name: string;
   readonly defaultModel: string;
   open(options: SessionOptions): Promise<AgentSession>;
+}
+
+export interface GatewayModel {
+  id: string;
+  name: string;
+  contextWindow: number;
+  maxTokens: number;
+  cost: { input: number; output: number; cacheRead: number; cacheWrite: number };
+}
+
+export interface Gateway {
+  baseUrl: string;
+  key: string;
+  model: GatewayModel;
 }

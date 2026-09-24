@@ -19,7 +19,13 @@ if (!job) {
 }
 
 const api = new SettingsApi(apiUrl.replace(/\/$/, ""), () => actionsIdToken());
-const { settings, reviews } = await api.settings(job.reviews);
+const fetched = await api.settings(job.reviews);
+const lease = fetched.settings.backend === "pi" ? await api.lease() : null;
+if (lease && "refused" in lease) console.log(`${lease.refused}, reviewing with the free model instead`);
+const gateway = lease && !("refused" in lease) ? lease : undefined;
+if (gateway) console.log(`::add-mask::${gateway.key}`);
+const settings = gateway || fetched.settings.backend !== "pi" ? fetched.settings : { ...fetched.settings, backend: "acp" as const, model: undefined };
+const { reviews } = fetched;
 console.log(`settings: reviews=${(job.reviews.length ? job.reviews : settings.reviews).join(",")} backend=${settings.backend} model=${settings.model ?? "default"} session=${settings.session}`);
 
 const asApp = (): Promise<PushIdentity> =>
@@ -36,26 +42,34 @@ const cwd = resolve(env("GITHUB_WORKSPACE") ?? process.cwd());
 const runId = env("GITHUB_RUN_ID");
 const runAttempt = env("GITHUB_RUN_ATTEMPT");
 const actionsRun = runId && runAttempt ? `${runId}.${runAttempt}` : undefined;
+const abort = new AbortController();
+const stop = () => {
+  abort.abort();
+  setTimeout(() => process.exit(1), 3000);
+};
+process.once("SIGINT", stop);
+process.once("SIGTERM", stop);
 const runs = await runJob(job, {
   gh: new PullRequestClient(new Octokit({ authStrategy: refreshingAuth(asApp, identity) })),
-  backend: getBackend(settings.backend),
+  backend: getBackend(settings.backend, gateway),
   settings,
   reviews,
   cwd,
   token: identity.token,
   site: apiUrl,
   log: (line) => console.log(line),
-  onRun: (run, pr) => api.report(runRecord(job, run, pr, actionsRun)),
+  onRun: (run, pr, from) => api.report(runRecord(job, run, pr, actionsRun, from)),
   autofix: { identity: () => api.installationToken(), ownRunId: env("GITHUB_RUN_ID") },
   capture: { identity: asApp },
   actionsRun,
-});
+  signal: abort.signal,
+}).finally(() => gateway && api.settle(gateway.keyId).then(({ credits }) => console.log(`spent ${credits} credits`), (error: Error) => console.log(`could not settle the gateway key: ${error.message}`)));
 
 const reportsDir = join(env("RUNNER_TEMP") ?? cwd, "shrike-reports");
 await mkdir(reportsDir, { recursive: true });
 await Promise.all(runs.map((run) => writeFile(join(reportsDir, `${run.review}.json`), JSON.stringify({ ...job, ...run }, null, 2))));
 if (env("GITHUB_OUTPUT")) await appendFile(env("GITHUB_OUTPUT")!, `reports=${reportsDir}\n`);
 
-const failed = runs.filter((run) => run.status === "error" && run.review !== SHRIKEN);
+const failed = runs.filter((run) => run.status === "cancelled" || (run.status === "error" && run.review !== SHRIKEN));
 console.log(`${runs.length - failed.length}/${runs.length} reviews completed, reports in ${reportsDir}`);
-if (failed.length) process.exit(1);
+if (failed.length || abort.signal.aborted) process.exit(1);

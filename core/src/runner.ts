@@ -5,7 +5,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { attemptsAtHead, AUTOFIX, commitAndPush, fixes, headMessages, planOf, problemsOf, reviewsGreen, waitForChecks, type AutofixDeps, type Plan } from "./autofix";
-import type { AgentSession, Backend } from "./backends";
+import type { AgentSession, Backend, ToolCall } from "./backends";
 import { baseWorktree, CAPTURE, captureHeadline, captureOf, collect, MEDIA_BRANCH, mediaPath, parsePlan, parseTaken, renderCapture, serve, type CaptureDeps, type Side } from "./capture";
 import { decisionIn, patchIn, plainDecision, renderCard, type Card, type OpenItem } from "./card";
 import { ensureCheckout } from "./checkout";
@@ -20,6 +20,7 @@ import { flag, judge, lineReader, renderThread, type Flagged, type Thread } from
 export interface Turn {
   role: "prompt" | "reply" | "tool";
   text: string;
+  output?: string;
 }
 
 export interface ReviewRun {
@@ -27,7 +28,7 @@ export interface ReviewRun {
   key?: string;
   backend: string;
   model: string;
-  status: "queued" | "running" | "done" | "error";
+  status: "queued" | "running" | "done" | "error" | "cancelled";
   startedAt?: string;
   finishedAt?: string;
   usage?: { tokens: number; cost: number };
@@ -52,7 +53,9 @@ export interface RunRecord {
   model: string;
   startedAt?: string;
   finishedAt?: string;
+  error?: string;
   transcript: Turn[];
+  from: number;
   actionsRun?: string;
 }
 
@@ -66,15 +69,17 @@ export interface RunDeps {
   site?: string;
   parallel?: number;
   log: (line: string) => void;
-  onRun?: (run: ReviewRun, pr: PullRequest) => Promise<void>;
+  onRun?: (run: ReviewRun, pr: PullRequest, from: number) => Promise<void>;
   live?: { throttleMs: number; beatMs: number };
   autofix?: AutofixDeps;
   capture?: CaptureDeps;
   actionsRun?: string;
+  signal?: AbortSignal;
 }
 
 type Opened = { session: AgentSession; followUp: boolean };
 type OpenOptions = { write?: boolean; captureDir?: string };
+type Wire = { chain: Promise<void>; sent: number; low: number; edits: number; failed: boolean };
 
 export const SHRIKEN = "shriken";
 export const PARALLEL = 3;
@@ -86,11 +91,13 @@ const RESERVED: Record<string, string> = {
 };
 const OWN = new Set([SHRIKEN, CAPTURE, AUTOFIX]);
 const PROMPT_KEEP = 20_000;
+const KEEP = 4000;
+const TURNS = 200;
 const LIVE = { throttleMs: 3000, beatMs: 60_000 };
 const RANK: Record<Report["verdict"], number> = { pass: 0, warn: 1, fail: 2 };
 const SEVERITY: Record<OpenItem["severity"], number> = { info: 0, warning: 1, error: 2 };
 
-export const runRecord = (job: Job, run: ReviewRun, pr: PullRequest, actionsRun?: string): RunRecord => ({
+export const runRecord = (job: Job, run: ReviewRun, pr: PullRequest, actionsRun?: string, from = 0): RunRecord => ({
   pr: pr.number,
   sha: pr.headSha,
   trigger: job.trigger,
@@ -105,7 +112,9 @@ export const runRecord = (job: Job, run: ReviewRun, pr: PullRequest, actionsRun?
   model: run.model,
   startedAt: run.startedAt,
   finishedAt: run.finishedAt,
-  transcript: run.transcript ?? [],
+  error: run.error?.slice(0, KEEP),
+  transcript: (run.transcript ?? []).slice(from, from + TURNS),
+  from,
   actionsRun,
 });
 
@@ -161,7 +170,7 @@ export async function runJob(job: Job, deps: RunDeps): Promise<ReviewRun[]> {
     : new Map((job.reviews.length ? job.reviews : deps.settings.reviews).map((name) => [name, deps.reviews.find((review) => review.name === name)]));
   const runs: ReviewRun[] = [...reviews].map(([review, loaded]) => {
     const error = asked ? undefined : RESERVED[review] ?? (loaded ? undefined : "unknown review");
-    return { review, backend: deps.backend.name, model, status: error ? "error" : "queued", ...(error ? { error } : {}) };
+    return { review, key: randomUUID(), backend: deps.backend.name, model, status: error ? "error" : "queued", ...(error ? { error } : {}) };
   });
   const card: Card = { patch: { id: patchId(pr.diff), sha: pr.headSha }, site: deps.site ? `${deps.site.replace(/\/$/, "")}/#/${pr.owner}/${pr.repo}/pull/${pr.number}` : undefined };
   const reviewedAt = (previous: string | null) => {
@@ -181,41 +190,75 @@ export async function runJob(job: Job, deps: RunDeps): Promise<ReviewRun[]> {
   const previous = decisionIn(status.previous);
   let chain = Promise.resolve();
   const post = () => (chain = chain.then(() => status.update(renderCard(runs, card))).catch((error) => deps.log(`could not update the card: ${error instanceof Error ? error.message : String(error)}`)));
+  const wires = new Map<ReviewRun, Wire>();
+  const wireOf = (run: ReviewRun) => wires.get(run) ?? wires.set(run, { chain: Promise.resolve(), sent: 0, low: Infinity, edits: 0, failed: false }).get(run)!;
+  const report = async (run: ReviewRun, all = false) => {
+    const own = wireOf(run);
+    for (let last = false; !last; ) {
+      const from = own.sent;
+      const length = run.transcript?.length ?? 0;
+      const to = Math.min(length, from + TURNS);
+      last = !all || to === length;
+      own.low = Infinity;
+      await deps.onRun?.(last ? run : { ...run, status: "running", finishedAt: undefined }, pr, from);
+      own.sent = Math.min(own.low, to);
+    }
+  };
+  const send = (run: ReviewRun) => {
+    const own = wireOf(run);
+    return (own.chain = own.chain
+      .then(() => (!deps.signal?.aborted && (run.status === "queued" || run.status === "running") ? report(run) : undefined))
+      .catch((error) => {
+        if (!own.failed) deps.log(`[${run.review}] could not report the running run: ${error instanceof Error ? error.message : String(error)}`);
+        own.failed = true;
+      }));
+  };
+  const queue = async (review: string) => {
+    const run: ReviewRun = { review, key: randomUUID(), backend: deps.backend.name, model, status: "queued" };
+    runs.push(run);
+    await send(run);
+    return run;
+  };
   let shared: AgentSession | undefined;
   const openFor = async (run: ReviewRun, { write = false, captureDir }: OpenOptions): Promise<Opened> => {
-    const log = (line: string) => {
-      if (line.startsWith("tool ")) said(run, "tool", line);
-      deps.log(`[${run.review}] ${line}`);
+    const log = (line: string) => deps.log(`[${run.review}] ${line}`);
+    const calls = new Map<string, Turn>();
+    const tool = ({ id, kind, title, output }: ToolCall) => {
+      let turn = calls.get(id);
+      if (!turn) {
+        turn = { role: "tool", text: `tool ${kind ?? ""} ${title ?? ""}` };
+        calls.set(id, turn);
+        (run.transcript ??= []).push(turn);
+      }
+      if (output === undefined) return;
+      turn.output = output.length > KEEP ? `${output.slice(0, KEEP - 6)}\n(cut)` : output;
+      const own = wireOf(run);
+      const index = run.transcript!.indexOf(turn);
+      own.sent = Math.min(own.sent, index);
+      own.low = Math.min(own.low, index);
+      own.edits += 1;
     };
-    if (write || captureDir || deps.settings.session !== "shared") return { session: await deps.backend.open({ cwd: deps.cwd, model, write, captureDir, log }), followUp: false };
+    if (write || captureDir || deps.settings.session !== "shared") return { session: await deps.backend.open({ cwd: deps.cwd, model, write, captureDir, log, tool }), followUp: false };
     const followUp = shared !== undefined;
-    shared ??= await deps.backend.open({ cwd: deps.cwd, model, log });
+    shared ??= await deps.backend.open({ cwd: deps.cwd, model, log, tool });
     return { session: shared, followUp };
   };
   const step = async (run: ReviewRun, work: (opened: (options?: OpenOptions) => Promise<Opened>, check: CheckHandle) => Promise<void>) => {
+    if (deps.signal?.aborted) return;
     run.status = "running";
     run.startedAt = new Date().toISOString();
-    run.key = randomUUID();
     deps.log(`[${run.review}] starting with ${run.backend}/${run.model}${shared ? " in the shared session" : ""}`);
     await post();
     const { throttleMs, beatMs } = deps.live ?? LIVE;
-    let wire = Promise.resolve();
-    let failed = false;
-    let sent = { turns: 0, at: Date.now() };
-    const send = () =>
-      (wire = wire
-        .then(() => (run.status === "running" ? deps.onRun?.(run, pr) : undefined))
-        .catch((error) => {
-          if (!failed) deps.log(`[${run.review}] could not report the running run: ${error instanceof Error ? error.message : String(error)}`);
-          failed = true;
-        }));
-    send();
+    const own = wireOf(run);
+    let seen = { mark: 0, at: Date.now() };
+    send(run);
     const check = await deps.gh.startCheck(pr, run.review);
     const ticker = setInterval(() => {
-      const turns = run.transcript?.length ?? 0;
-      if (turns === sent.turns && Date.now() - sent.at < beatMs) return;
-      sent = { turns, at: Date.now() };
-      send();
+      const mark = (run.transcript?.length ?? 0) + own.edits;
+      if (mark === seen.mark && Date.now() - seen.at < beatMs) return;
+      seen = { mark, at: Date.now() };
+      send(run);
     }, throttleMs);
     let session: AgentSession | undefined;
     try {
@@ -224,8 +267,10 @@ export async function runJob(job: Job, deps: RunDeps): Promise<ReviewRun[]> {
         session = opened.session;
         return opened;
       }, check);
+      if (deps.signal?.aborted) return;
       run.status = "done";
     } catch (error) {
+      if (deps.signal?.aborted) return;
       run.status = "error";
       run.error = error instanceof Error ? error.message : String(error);
       deps.log(`[${run.review}] failed: ${run.error}`);
@@ -237,8 +282,21 @@ export async function runJob(job: Job, deps: RunDeps): Promise<ReviewRun[]> {
     }
     run.finishedAt = new Date().toISOString();
     await post();
-    await wire;
-    await deps.onRun?.(run, pr).catch((error) => deps.log(`[${run.review}] could not report the run: ${error instanceof Error ? error.message : String(error)}`));
+    await own.chain;
+    await report(run, true).catch((error) => deps.log(`[${run.review}] could not report the run: ${error instanceof Error ? error.message : String(error)}`));
+  };
+  const cancel = async () => {
+    const live = runs.filter((run) => run.status === "queued" || run.status === "running");
+    const finishedAt = new Date().toISOString();
+    for (const run of live) Object.assign(run, { status: "cancelled", finishedAt });
+    deps.log(`cancelled, reporting ${live.length} run(s) as cancelled`);
+    post();
+    await Promise.all(
+      live.map((run) => {
+        const own = wireOf(run);
+        return (own.chain = own.chain.then(() => report(run, true)).catch((error) => deps.log(`[${run.review}] could not report the cancelled run: ${error instanceof Error ? error.message : String(error)}`)));
+      }),
+    );
   };
   const judged: Judgement[][] = [];
   const review = (run: ReviewRun, loaded: Review) =>
@@ -298,8 +356,7 @@ export async function runJob(job: Job, deps: RunDeps): Promise<ReviewRun[]> {
     await post();
   };
   const capture = async () => {
-    const run: ReviewRun = { review: CAPTURE, backend: deps.backend.name, model, status: "queued" };
-    runs.push(run);
+    const run = await queue(CAPTURE);
     await step(run, async (opened, check) => {
       const { captureCommand: command, captureUrl: url } = deps.settings;
       const done = async (summary: string, verdict: Report["verdict"], taken: Capture = { shots: [], videos: {} }) => {
@@ -346,8 +403,7 @@ export async function runJob(job: Job, deps: RunDeps): Promise<ReviewRun[]> {
     const fixable = fixes(plan, deps.settings);
     const held = plan.named.length ? [] : settled.filter((run) => !fixable(run.review) && !reviewsGreen([run])).map((run) => run.review);
     if (held.length && !job.autofix) return deps.log(`[autofix] ${held.join(", ")} not green and not autofixed, nothing fixed yet`);
-    const run: ReviewRun = { review: AUTOFIX, backend: deps.backend.name, model, status: "queued" };
-    runs.push(run);
+    const run = await queue(AUTOFIX);
     await step(run, async (opened, check) => {
       const done = async (summary: string, verdict: Report["verdict"]) => {
         run.report = { summary, verdict, findings: [] };
@@ -369,11 +425,12 @@ export async function runJob(job: Job, deps: RunDeps): Promise<ReviewRun[]> {
       await done(`Pushed ${sha.slice(0, 7)}: ${summary}`, "pass");
     });
   };
-  try {
+  const pipeline = async () => {
     const pending = runs.flatMap((run) => {
       const loaded = reviews.get(run.review);
       return loaded && run.status !== "error" ? [{ run, loaded }] : [];
     });
+    await Promise.all(pending.map(({ run }) => send(run)));
     await limited(pending, deps.settings.session === "shared" ? 1 : deps.parallel ?? PARALLEL, ({ run, loaded }) => review(run, loaded));
     await lifecycle();
     const verdicts = runs.flatMap((run) => (run.report ? [run.report.verdict] : []));
@@ -382,8 +439,7 @@ export async function runJob(job: Job, deps: RunDeps): Promise<ReviewRun[]> {
       else deps.log("[capture] skipped: this runner has no identity to publish the files with");
     }
     if (deps.settings.shriken && verdicts.length) {
-      const run: ReviewRun = { review: SHRIKEN, backend: deps.backend.name, model, status: "queued" };
-      runs.push(run);
+      const run = await queue(SHRIKEN);
       await step(run, async (opened, check) => {
         const { session } = await opened();
         const scored = runs.filter((own) => own.report && own.review !== CAPTURE).map((own) => own.review);
@@ -401,6 +457,10 @@ export async function runJob(job: Job, deps: RunDeps): Promise<ReviewRun[]> {
     const messages = deps.autofix ? await headMessages(deps.cwd) : [];
     const plan = deps.autofix ? planOf(job, deps.settings, messages[0] ?? "") : null;
     if (plan) await fix(plan, attemptsAtHead(messages));
+  };
+  const stopped = new Promise<void>((resolve) => deps.signal?.addEventListener("abort", () => resolve(), { once: true }));
+  try {
+    await Promise.race([pipeline(), stopped.then(cancel)]);
   } finally {
     await shared?.close();
     await chain;

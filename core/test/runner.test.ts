@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { AgentSession, Backend } from "../src/backends";
+import type { AgentSession, Backend, ToolCall } from "../src/backends";
 import { mediaUrl } from "../src/capture";
 import { DECISION_MARKER, PATCH_MARKER } from "../src/card";
 import { git } from "../src/checkout";
@@ -10,7 +10,7 @@ import { patchId } from "../src/diff";
 import { STATUS_MARKER, type CheckRun, type MediaFile, type PullRequest, type PullRequestClient, type PullRequestHistory } from "../src/github";
 import { VERIFY_PROMPT } from "../src/prompt";
 import type { Finding, Report } from "../src/report";
-import { runJob, runRecord } from "../src/runner";
+import { runJob, runRecord, type ReviewRun, type RunRecord, type Turn } from "../src/runner";
 import { resolveSettings, type Review } from "../src/settings";
 import { fingerprintOf, type Thread } from "../src/threads";
 
@@ -26,6 +26,7 @@ const reviews: Review[] = ["code-review", "slop-review", "intent-review", "secur
 }));
 const settings = (raw: Record<string, unknown> = {}) => resolveSettings(raw);
 const THREE = ["slop-review", "code-review", "security-review"];
+const settled = (run: { status: string }) => run.status !== "queued" && run.status !== "running";
 const history: PullRequestHistory = { commits: [{ sha: "abcdef0123", headline: "Add line", author: "a", date: "2026-01-01T00:00:00Z" }], comments: [], issues: [], images: [] };
 const LINE = "const total = rows.length;";
 const thread = (extra: Partial<Thread> = {}): Thread => ({ id: "T1", fingerprint: fingerprintOf("f.txt", "warn finding"), path: "f.txt", line: 1, title: "warn finding", severity: "warning", skills: ["slop-review"], resolved: false, closedByShrike: false, commentId: 11, commentNodeId: "C1", url: "https://gh/t/1", replies: [], ...extra });
@@ -84,6 +85,7 @@ interface Fixtures {
   previous?: string;
   closeFails?: boolean;
   promptDelayMs?: number;
+  onPrompt?: (text: string, tool: (call: ToolCall) => void) => Promise<void>;
   onFix?: (cwd: string) => Promise<void>;
   onShots?: (side: "before" | "after", captureDir: string, url: string) => Promise<void>;
 }
@@ -96,7 +98,7 @@ function fakes(replies: Record<string, string[]>, pr: PullRequest, fixtures: Fix
   const backend: Backend = {
     name: "fake",
     defaultModel: "fake/default",
-    async open({ model, cwd, write, captureDir }): Promise<AgentSession> {
+    async open({ model, cwd, write, captureDir, tool }): Promise<AgentSession> {
       const session: Session = { model: model ?? "", prompts: [], closed: false, write: write === true, ...(captureDir ? { captureDir } : {}) };
       trace.sessions.push(session);
       trace.peak = Math.max(trace.peak, ++opened);
@@ -104,6 +106,7 @@ function fakes(replies: Record<string, string[]>, pr: PullRequest, fixtures: Fix
       return {
         async prompt(text) {
           session.prompts.push(text);
+          await fixtures.onPrompt?.(text, tool ?? (() => {}));
           await new Promise((resolve) => setTimeout(resolve, fixtures.promptDelayMs ?? 1));
           const review = nameOf(text) ?? nameOf(session.prompts.findLast((p) => nameOf(p) !== undefined)!)!;
           const reply = (replies[review] ?? [])[answered[review] ?? 0];
@@ -198,7 +201,7 @@ describe("runJob", () => {
     const seen: [string, string][] = [];
     const runs = await runJob(
       { owner: "o", repo: "r", pr: 1, trigger: "pull_request", reviews: [] },
-      { gh, backend, settings: settings({ reviews: THREE }), reviews, cwd: dir, site: "https://shrike.example/", log: () => {}, onRun: async (run) => void (run.status !== "running" && seen.push([run.review, run.status])) },
+      { gh, backend, settings: settings({ reviews: THREE }), reviews, cwd: dir, site: "https://shrike.example/", log: () => {}, onRun: async (run) => void (settled(run) && seen.push([run.review, run.status])) },
     );
     expect(runs.map((r) => [r.review, r.status, r.report?.verdict])).toEqual([
       ["slop-review", "done", "warn"],
@@ -628,7 +631,7 @@ describe("runJob", () => {
     const logs: string[] = [];
     const failedRuns = await runJob(
       { owner: "o", repo: "r", pr: 1, trigger: "comment", reviews: ["code-review"] },
-      { gh: failed.gh, backend: failed.backend, settings: settings(), reviews, cwd: dir, log: (line) => logs.push(line), onRun: async (run) => void (run.status !== "running" && seen.push([run.review, run.status])) },
+      { gh: failed.gh, backend: failed.backend, settings: settings(), reviews, cwd: dir, log: (line) => logs.push(line), onRun: async (run) => void (settled(run) && seen.push([run.review, run.status])) },
     );
     expect(failedRuns.map((r) => [r.review, r.status])).toEqual([
       ["code-review", "done"],
@@ -657,7 +660,7 @@ describe("runJob", () => {
     const logs: string[] = [];
     const runs = await runJob(
       { owner: "o", repo: "r", pr: 1, trigger: "comment", reviews: ["code-review"] },
-      { gh: refused.gh, backend: refused.backend, settings: settings(), reviews, cwd: dir, log: (line) => logs.push(line), onRun: async (run) => void (run.status !== "running" && seen.push([run.review, run.status])) },
+      { gh: refused.gh, backend: refused.backend, settings: settings(), reviews, cwd: dir, log: (line) => logs.push(line), onRun: async (run) => void (settled(run) && seen.push([run.review, run.status])) },
     );
     expect(runs.map((r) => [r.review, r.status, r.error])).toEqual([
       ["code-review", "done", undefined],
@@ -681,7 +684,7 @@ describe("runJob", () => {
     const reported: [string, string | undefined][] = [];
     const recoveredRuns = await runJob(
       { owner: "o", repo: "r", pr: 1, trigger: "comment", reviews: ["code-review"] },
-      { gh: recovered.gh, backend: recovered.backend, settings: settings(), reviews, cwd: dir, log: () => {}, onRun: async (run) => void (run.status !== "running" && reported.push([run.review, run.report?.summary])) },
+      { gh: recovered.gh, backend: recovered.backend, settings: settings(), reviews, cwd: dir, log: () => {}, onRun: async (run) => void (settled(run) && reported.push([run.review, run.report?.summary])) },
     );
     expect(recoveredRuns.map((r) => [r.review, r.status])).toEqual([
       ["code-review", "done"],
@@ -760,7 +763,7 @@ describe("runJob", () => {
         cwd: dir,
         log: (line) => logs.push(line),
         onRun: async (run, seenPr) => {
-          if (run.status !== "running") seen.push([run.review, run.status, seenPr.number]);
+          if (settled(run)) seen.push([run.review, run.status, seenPr.number]);
           if (run.review === "code-review") throw new Error("db down");
         },
       },
@@ -809,7 +812,7 @@ describe("live reporting", () => {
     expect(codeKey).not.toBe(slopKey);
   });
 
-  test("the first report of a run is running with no finishedAt, the last is done or error with finishedAt", async () => {
+  test("a run is reported queued, then running, both without finishedAt, and last as done or error with finishedAt", async () => {
     const { dir, sha } = await repoAtHead();
     const pr = prAt(dir, sha);
     const { backend, gh } = fakes({ "code-review": [report("pass")], "slop-review": ["nope", "nope"] }, pr);
@@ -819,7 +822,7 @@ describe("live reporting", () => {
       { gh, backend, settings: settings({ reviews: ["code-review", "slop-review"], shriken: false }), reviews, cwd: dir, log: () => {}, onRun: async (run) => void (byReview[run.review] ??= []).push({ status: run.status, finishedAt: run.finishedAt }) },
     );
     for (const own of Object.values(byReview)) {
-      expect(own[0]).toEqual({ status: "running", finishedAt: undefined });
+      expect(own.slice(0, 2)).toEqual([{ status: "queued", finishedAt: undefined }, { status: "running", finishedAt: undefined }]);
       expect(["done", "error"]).toContain(own.at(-1)!.status);
       expect(own.at(-1)!.finishedAt).toBeDefined();
     }
@@ -842,7 +845,7 @@ describe("live reporting", () => {
         log: () => {},
         onRun: async (run) => {
           if (closed.has(run.review)) afterFinal++;
-          if (run.status !== "running") closed.add(run.review);
+          if (settled(run)) closed.add(run.review);
         },
       },
     );
@@ -946,11 +949,135 @@ describe("live reporting", () => {
     );
     expect(Object.keys(reports).sort()).toEqual(["code-review", "slop-review"]);
     for (const own of Object.values(reports)) {
-      expect(own.filter((one) => one.status !== "running")).toHaveLength(1);
+      expect(own.filter(settled)).toHaveLength(1);
       expect(own.at(-1)!.status).not.toBe("running");
       expect(own.at(-1)!.finishedAt).toBeDefined();
-      expect(own.slice(0, -1).every((one) => one.status === "running" && one.finishedAt === undefined)).toBe(true);
+      expect(own.slice(0, -1).every((one) => !settled(one) && one.finishedAt === undefined)).toBe(true);
     }
+  });
+});
+
+describe("run records", () => {
+  const JOB = { owner: "o", repo: "r", pr: 1, trigger: "comment" as const, reviews: ["code-review"] };
+  const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+  const recorder = () => {
+    const records: RunRecord[] = [];
+    const stored: Record<string, Turn[]> = {};
+    const onRun = async (run: ReviewRun, pr: PullRequest, from: number) => {
+      const record = structuredClone(runRecord(JOB, run, pr, undefined, from));
+      records.push(record);
+      record.transcript.forEach((turn, at) => ((stored[record.key!] ??= [])[record.from + at] = turn));
+    };
+    return { records, stored, onRun };
+  };
+
+  test("a run is reported queued first, with the key every later report of it carries", async () => {
+    const { dir, sha } = await repoAtHead();
+    const pr = prAt(dir, sha);
+    const { backend, gh } = fakes({ "code-review": [report("pass")], shriken }, pr);
+    const { records, onRun } = recorder();
+    await runJob(JOB, { gh, backend, settings: settings(), reviews, cwd: dir, log: () => {}, onRun });
+    for (const review of ["code-review", "shriken"]) {
+      const own = records.filter((record) => record.review === review);
+      expect(own[0]).toMatchObject({ status: "queued", transcript: [], from: 0 });
+      expect(own[0]!.startedAt).toBeUndefined();
+      expect(own[0]!.key).toMatch(/^[0-9a-f-]{36}$/);
+      expect(own.filter((record) => record.status === "queued")).toHaveLength(1);
+      expect(own.every((record) => record.key === own[0]!.key)).toBe(true);
+      expect(own.at(-1)!.status).toBe("done");
+    }
+  });
+
+  test("the record carries the run's error, cut to 4000 characters", async () => {
+    const { dir, sha } = await repoAtHead();
+    const pr = prAt(dir, sha);
+    const { backend, gh } = fakes({ "code-review": ["nope", "nope"] }, pr);
+    const { records, onRun } = recorder();
+    const runs = await runJob(JOB, { gh, backend, settings: settings({ shriken: false }), reviews, cwd: dir, log: () => {}, onRun });
+    expect(records.at(-1)!.status).toBe("error");
+    expect(records.at(-1)!.error).toBeTruthy();
+    expect(records.at(-1)!.error).toBe(runs[0]!.error!);
+    expect(records.slice(0, -1).every((record) => record.error === undefined)).toBe(true);
+    expect(runRecord(JOB, { review: "code-review", backend: "fake", model: "m", status: "error", error: "e".repeat(5000) }, pr).error).toBe("e".repeat(4000));
+  });
+
+  test("live reports send each turn once, starting where the last report stopped", async () => {
+    const { dir, sha } = await repoAtHead();
+    const pr = prAt(dir, sha);
+    const { backend, gh } = fakes({ "code-review": [report("fail"), report("fail")] }, pr, { promptDelayMs: 30 });
+    const { records, stored, onRun } = recorder();
+    const runs = await runJob(JOB, { gh, backend, settings: settings({ shriken: false }), reviews, cwd: dir, log: () => {}, live: { throttleMs: 10, beatMs: 100_000 }, onRun });
+    const carrying = records.filter((record) => record.transcript.length);
+    expect(carrying.length).toBeGreaterThan(1);
+    expect(records.flatMap((record) => record.transcript)).toHaveLength(runs[0]!.transcript!.length);
+    for (const [at, record] of carrying.entries()) expect(record.from).toBe(at ? carrying[at - 1]!.from + carrying[at - 1]!.transcript.length : 0);
+    expect(stored[runs[0]!.key!]).toEqual(runs[0]!.transcript!);
+  });
+
+  test("a tool output that lands after its turn was sent resends from that turn", async () => {
+    const { dir, sha } = await repoAtHead();
+    const pr = prAt(dir, sha);
+    const onPrompt = async (_text: string, tool: (call: ToolCall) => void) => {
+      tool({ id: "t1", kind: "read", title: "f.txt" });
+      await sleep(40);
+      tool({ id: "t1", output: "file body" });
+      tool({ id: "t2", kind: "search", title: "grep" });
+      tool({ id: "t2", output: "y".repeat(5000) });
+    };
+    const { backend, gh } = fakes({ "code-review": [report("pass")] }, pr, { onPrompt });
+    const { records, stored, onRun } = recorder();
+    const runs = await runJob(JOB, { gh, backend, settings: settings({ shriken: false }), reviews, cwd: dir, log: () => {}, live: { throttleMs: 5, beatMs: 100_000 }, onRun });
+    expect(records.some((record) => record.transcript.some((turn) => turn.text === "tool read f.txt" && turn.output === undefined))).toBe(true);
+    expect(records.find((record) => record.transcript[0]?.output === "file body")?.from).toBe(1);
+    const turns = stored[runs[0]!.key!]!;
+    expect(turns).toEqual(runs[0]!.transcript!);
+    expect(turns[1]).toEqual({ role: "tool", text: "tool read f.txt", output: "file body" });
+    expect(turns[2]!.output).toHaveLength(4000);
+    expect(turns[2]!.output!.endsWith("y\n(cut)")).toBe(true);
+  });
+
+  test("the final report delivers every remaining turn in chunks of 200", async () => {
+    const { dir, sha } = await repoAtHead();
+    const pr = prAt(dir, sha);
+    const onPrompt = async (_text: string, tool: (call: ToolCall) => void) => {
+      for (let at = 0; at < 450; at++) tool({ id: `t${at}`, kind: "read", title: `f${at}` });
+    };
+    const { backend, gh } = fakes({ "code-review": [report("pass")] }, pr, { onPrompt });
+    const { records, stored, onRun } = recorder();
+    const runs = await runJob(JOB, { gh, backend, settings: settings({ shriken: false }), reviews, cwd: dir, log: () => {}, live: { throttleMs: 100_000, beatMs: 100_000 }, onRun });
+    const final = records.slice(-3);
+    expect(final.map((record) => [record.status, record.from, record.transcript.length])).toEqual([["running", 0, 200], ["running", 200, 200], ["done", 400, 52]]);
+    expect(final.map((record) => record.finishedAt === undefined)).toEqual([true, true, false]);
+    expect(records.filter((record) => record.status === "done")).toHaveLength(1);
+    expect(stored[runs[0]!.key!]).toEqual(runs[0]!.transcript!);
+  });
+
+  test("an abort reports every queued and running run as cancelled and nothing after", async () => {
+    const { dir, sha } = await repoAtHead();
+    const pr = prAt(dir, sha);
+    const abort = new AbortController();
+    const onPrompt = async (_text: string, tool: (call: ToolCall) => void) => {
+      for (let at = 0; at < 250; at++) tool({ id: `t${at}`, kind: "read", title: `f${at}` });
+      setTimeout(() => abort.abort(), 10);
+    };
+    const { trace, backend, gh } = fakes({ "code-review": [report("pass")], "slop-review": [report("pass")] }, pr, { promptDelayMs: 80, onPrompt });
+    const { records, stored, onRun } = recorder();
+    const runs = await runJob({ ...JOB, reviews: ["code-review", "slop-review"] }, { gh, backend, settings: settings({ shriken: false }), reviews, cwd: dir, parallel: 1, log: () => {}, signal: abort.signal, onRun });
+    expect(runs.map((run) => [run.review, run.status])).toEqual([["code-review", "cancelled"], ["slop-review", "cancelled"]]);
+    await sleep(150);
+    for (const run of runs) {
+      const own = records.filter((record) => record.key === run.key);
+      expect(own[0]!.status).toBe("queued");
+      expect(own.at(-1)!.status).toBe("cancelled");
+      expect(own.at(-1)!.finishedAt).toBeDefined();
+      expect(own.filter((record) => record.status === "cancelled")).toHaveLength(1);
+      expect(own.slice(0, -1).every((record) => record.finishedAt === undefined)).toBe(true);
+    }
+    const code = records.filter((record) => record.key === runs[0]!.key);
+    expect(code.slice(-2).map((record) => [record.status, record.from, record.transcript.length])).toEqual([["running", 0, 200], ["cancelled", 200, 51]]);
+    expect(records.filter((record) => record.key === runs[1]!.key).map((record) => record.status)).toEqual(["queued", "cancelled"]);
+    expect(stored[runs[0]!.key!]).toEqual(runs[0]!.transcript!.slice(0, 251));
+    expect(trace.sessions).toHaveLength(1);
   });
 });
 
@@ -991,7 +1118,7 @@ describe("autofix", () => {
         reviews,
         cwd: dir,
         log: () => {},
-        onRun: async (run) => void (run.status !== "running" && seen.push([run.review, run.status, run.report?.verdict])),
+        onRun: async (run) => void (settled(run) && seen.push([run.review, run.status, run.report?.verdict])),
         autofix: autofix(bare, asked),
       },
     );
