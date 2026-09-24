@@ -32,7 +32,7 @@ export const askReview = (prompt: string, thread?: Thread): Review => ({
 });
 
 export const SHRIKEN_RETRY_PROMPT =
-  "Your last message did not contain a valid summary. Reply with the two or three paragraphs inside one ```markdown fenced block, a reference token such as [review:<name>] or [finding:<review>#<n>] on every claim, then one ```json fenced block {\"scores\": {\"<review>\": <0 to 100>}} with an integer for every review, and nothing after it.";
+  "Your last message did not contain a valid summary. Reply with the two or three paragraphs inside one ```markdown fenced block, a reference token such as [review:<name>] or [finding:<review>#<n>] on every claim, then one ```json fenced block {\"decision\": \"merge\" | \"hold\" | \"reject\", \"scores\": {\"<review>\": <0 to 100>}} with the position of your last paragraph and an integer for every review, and nothing after it.";
 
 export const AUTOFIX_RETRY_PROMPT =
   "Your last message did not contain the summary. Reply with one ```markdown fenced block: a first line of at most 70 characters saying what you changed, then one or two short paragraphs, and nothing after it.";
@@ -203,7 +203,7 @@ ${clipDiff(pr.diff)}
 \`\`\`
 
 # Output contract
-Write the summary a reviewer reads before deciding: two or three paragraphs of plain sentences, at most 90 words each, that tell what the pull request does, what matters in what the reviews found, and what to decide. The last paragraph takes a position in plain words, merge, request changes, or hold and ask, names the one thing that decides it, and says what would change your mind. No headings, no lists, no tables, no links, no placeholder tokens such as [start] or [end]: the text begins with its first sentence.
+Write the summary a reviewer reads before deciding: two or three paragraphs of plain sentences, at most 90 words each, that tell what the pull request does, what matters in what the reviews found, and what to decide. The last paragraph takes a position in plain words, merge, hold the merge, or do not merge, names the one thing that decides it, and says what would change your mind. No headings, no lists, no tables, no links, no placeholder tokens such as [start] or [end]: the text begins with its first sentence.
 Between the paragraphs, show what the reviewer must see with at most three blocks in total, each on its own lines:
 - a \`\`\`diff block quoting at most 15 lines of the diff above that matter most, right after a sentence naming that file with a [file:<path>:<line>] token
 - a \`\`\`suggestion block copied from a finding, right after a sentence with that finding's token
@@ -218,7 +218,7 @@ Rules:
 - Every claim about the code, a finding, a commit, a discussion or an issue carries at least one token.
 - Tokens only name things listed above; never invent one.
 - The only other markup allowed is inline code in backticks and **bold**.
-- After the document, score every review: a \`\`\`json fenced block {"scores": {"<review>": <0 to 100>}} with one integer for each of ${reviews.map((review) => review.name).join(", ") || "the reviews"}. 100 means the review found nothing to change; each error finding weighs more than each warning, which weighs more than each info note; a fail verdict cannot score above 60.
+- After the document, a \`\`\`json fenced block {"decision": "merge" | "hold" | "reject", "scores": {"<review>": <0 to 100>}}. The decision is the position your last paragraph takes: merge when it can land as it is, hold when it can land once something is fixed, answered or passing, reject when it should not land at all, such as a pull request that says not to merge it or a change that goes the wrong way. The scores hold one integer for each of ${reviews.map((review) => review.name).join(", ") || "the reviews"}. 100 means the review found nothing to change; each error finding weighs more than each warning, which weighs more than each info note; a fail verdict cannot score above 60.
 - Answer with the document inside one \`\`\`markdown fenced block, then the \`\`\`json block, and nothing after it.`;
 }
 

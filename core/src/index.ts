@@ -6,7 +6,7 @@ export { PullRequestClient, refreshingAuth } from "./github";
 export type { PullRequest, PullRequestHistory, PushIdentity } from "./github";
 export { CHECK_ACTIONS, jobFromEvent, jobSchema, parseTrigger } from "./job";
 export type { Job } from "./job";
-export { parseReport, parseShriken, parseShrikenScores, reportSchema, shrikenReferences, verdictOf } from "./report";
+export { parseReport, parseShriken, parseShrikenCall, reportSchema, shrikenReferences, verdictOf } from "./report";
 export type { Capture, Report, Finding, Judgement, ShrikenReference } from "./report";
 export { runJob, runRecord, PARALLEL, SHRIKEN } from "./runner";
 export { renderCard } from "./card";

@@ -40,10 +40,11 @@ export const reportSchema = z.object({
   findings: z.array(findingSchema).default([]),
   threads: z.array(judgementSchema).optional(),
   scores: z.record(z.string(), z.number().int().min(0).max(100)).optional(),
+  decision: z.enum(["merge", "hold", "reject"]).optional(),
   capture: captureSchema.optional(),
 });
 
-const scoresSchema = z.object({ scores: z.record(z.string(), z.number().int().min(0).max(100)) });
+const callSchema = z.object({ decision: z.enum(["merge", "hold", "reject"]), scores: z.record(z.string(), z.number().int().min(0).max(100)) });
 
 export type Spot = z.infer<typeof spotSchema>;
 export type Finding = z.infer<typeof findingSchema>;
@@ -111,14 +112,14 @@ export function parseShriken(text: string): string {
   return document;
 }
 
-export function parseShrikenScores(text: string, reviews: string[]): Record<string, number> {
+export function parseShrikenCall(text: string, reviews: string[]): { decision: NonNullable<Report["decision"]>; scores: Record<string, number> } {
   const open = text.lastIndexOf("```json");
   const close = text.indexOf("```", open + "```json".length);
-  if (open < 0 || close < 0) throw new Error("no json block with the scores found");
-  const { scores } = scoresSchema.parse(JSON.parse(text.slice(open + "```json".length, close)));
+  if (open < 0 || close < 0) throw new Error("no json block with the decision and scores found");
+  const { decision, scores } = callSchema.parse(JSON.parse(text.slice(open + "```json".length, close)));
   const missing = reviews.filter((review) => !(review in scores));
   if (missing.length) throw new Error(`scores missing for ${missing.join(", ")}`);
-  return Object.fromEntries(reviews.map((review) => [review, scores[review]!]));
+  return { decision, scores: Object.fromEntries(reviews.map((review) => [review, scores[review]!])) };
 }
 
 export const shrikenReferences = (text: string): ShrikenReference[] => [...text.matchAll(REFERENCE)].map(([, kind, value]) => ({ kind: kind as ShrikenReference["kind"], value: value! }));

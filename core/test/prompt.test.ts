@@ -44,8 +44,8 @@ describe("buildShrikenPrompt", () => {
     const contract = prompt.slice(prompt.indexOf("# Output contract"));
     expect(contract).toContain("two or three paragraphs of plain sentences, at most 90 words each");
     expect(contract).toContain("No headings, no lists, no tables, no links, no placeholder tokens such as [start] or [end]: the text begins with its first sentence.");
-    expect(contract).toContain("The last paragraph takes a position in plain words, merge, request changes, or hold and ask, names the one thing that decides it, and says what would change your mind.");
-    expect(contract).toContain('{"scores": {"<review>": <0 to 100>}} with one integer for each of code-review.');
+    expect(contract).toContain("The last paragraph takes a position in plain words, merge, hold the merge, or do not merge, names the one thing that decides it, and says what would change your mind.");
+    expect(contract).toContain('{"decision": "merge" | "hold" | "reject", "scores": {"<review>": <0 to 100>}}. The decision is the position your last paragraph takes');
     expect(contract).toContain("a fail verdict cannot score above 60");
     expect(contract).toContain("at most three blocks in total");
     expect(contract).toContain("- a \`\`\`diff block quoting at most 15 lines of the diff above that matter most, right after a sentence naming that file with a [file:<path>:<line>] token");
@@ -127,7 +127,7 @@ describe("capture prompts", () => {
     expect(prompt).toContain("# Screenshots Shrike took before and after the change\n- alt: before home, url: https://m/before-home.png\n- alt: after home, url: https://m/after-home.png\n- alt: after settings, url: https://m/after-settings.png\n\n# Reviews");
     expect(prompt).not.toContain("before.webm");
     expect(prompt).not.toContain("## Review: capture");
-    expect(prompt).toContain("with one integer for each of code-review.");
+    expect(prompt).toContain("The scores hold one integer for each of code-review.");
   });
 });
 

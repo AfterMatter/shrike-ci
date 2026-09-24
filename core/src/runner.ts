@@ -13,7 +13,7 @@ import { globMatches, patchId } from "./diff";
 import { conclusionOf, headline, splitFlagged, STATUS_MARKER, type CheckHandle, type MediaFile, type PullRequest, type PullRequestClient } from "./github";
 import type { Job } from "./job";
 import { ASK, askReview, AUTOFIX_RETRY_PROMPT, buildAutofixPrompt, buildCapturePlanPrompt, buildCaptureShotsPrompt, buildPrompt, buildShrikenPrompt, CAPTURE_PLAN_RETRY_PROMPT, CAPTURE_TAKEN_RETRY_PROMPT, RETRY_PROMPT, SHRIKEN_RETRY_PROMPT, VERIFY_PROMPT } from "./prompt";
-import { parseReport, parseShriken, parseShrikenScores, shrikenReferences, topFinding, verdictOf, type Capture, type Finding, type Judgement, type Report } from "./report";
+import { parseReport, parseShriken, parseShrikenCall, shrikenReferences, topFinding, verdictOf, type Capture, type Finding, type Judgement, type Report } from "./report";
 import type { AutofixMode, Review, Settings } from "./settings";
 import { flag, judge, lineReader, renderThread, type Flagged, type Thread } from "./threads";
 
@@ -383,12 +383,12 @@ export async function runJob(job: Job, deps: RunDeps): Promise<ReviewRun[]> {
       await step(run, async (opened, check) => {
         const { session } = await opened();
         const scored = runs.filter((own) => own.report && own.review !== CAPTURE).map((own) => own.review);
-        const { summary, scores } = await ask(run, session, buildShrikenPrompt(pr, await deps.gh.history(pr), runs), SHRIKEN_RETRY_PROMPT, (text) => {
+        const { summary, decision, scores } = await ask(run, session, buildShrikenPrompt(pr, await deps.gh.history(pr), runs), SHRIKEN_RETRY_PROMPT, (text) => {
           const parsed = parseShriken(text);
           if (!shrikenReferences(parsed).length) throw new Error("summary carries no references");
-          return { summary: parsed, scores: parseShrikenScores(text, scored) };
+          return { summary: parsed, ...parseShrikenCall(text, scored) };
         }, deps.log);
-        run.report = { summary, verdict: verdicts.reduce((worst, verdict) => (RANK[verdict] > RANK[worst] ? verdict : worst), "pass"), findings: [], scores };
+        run.report = { summary, verdict: verdicts.reduce((worst, verdict) => (RANK[verdict] > RANK[worst] ? verdict : worst), "pass"), findings: [], scores, decision };
         card.decision = plainDecision(summary);
         await check.finish("neutral", "summary written", summary);
       });

@@ -17,7 +17,7 @@ import { fingerprintOf, type Thread } from "../src/threads";
 const findingOf = (verdict: Report["verdict"]): Finding[] => (verdict === "pass" ? [] : [{ path: "f.txt", line: 1, severity: verdict === "warn" ? "warning" : "error", title: `${verdict} finding`, body: `${verdict} body` }]);
 const report = (verdict: Report["verdict"], findings: Report["findings"] = findingOf(verdict), extra: Partial<Report> = {}): string => `\`\`\`json\n${JSON.stringify({ summary: `${verdict} summary`, verdict, findings, ...extra })}\n\`\`\``;
 const SUMMARY = "It adds a line [commit:abcdef0] to [file:f.txt:1].\n\nNothing blocks the merge [review:code-review].";
-const SCORES = '```json\n{"scores": {"code-review": 70, "slop-review": 80, "security-review": 40, "cleanup": 90, "extra": 1}}\n```';
+const SCORES = '```json\n{"decision": "hold", "scores": {"code-review": 70, "slop-review": 80, "security-review": 40, "cleanup": 90, "extra": 1}}\n```';
 const shriken = [`Here it is:\n\`\`\`markdown\n${SUMMARY}\n\`\`\`\n${SCORES}`];
 const reviews: Review[] = ["code-review", "slop-review", "intent-review", "security-review", "cleanup", "shriken"].map((name) => ({
   name,
@@ -230,7 +230,7 @@ describe("runJob", () => {
       ["shriken", "neutral", "summary written"],
     ]);
     expect(runs.every((r) => r.usage?.tokens === 10 && r.startedAt && r.finishedAt)).toBe(true);
-    expect(runs.at(-1)!.report).toEqual({ summary: SUMMARY, verdict: "fail", findings: [], scores: { "slop-review": 80, "code-review": 70, "security-review": 40 } });
+    expect(runs.at(-1)!.report).toEqual({ summary: SUMMARY, verdict: "fail", findings: [], scores: { "slop-review": 80, "code-review": 70, "security-review": 40 }, decision: "hold" });
     expect(runs.map((r) => r.posted?.url)).toEqual(["https://r/review", undefined, "https://r/review", undefined]);
     expect(runs[0]!.transcript!.map((turn) => turn.role)).toEqual(["prompt", "reply", "prompt", "reply"]);
     expect(seen).toEqual([
@@ -613,7 +613,7 @@ describe("runJob", () => {
     expect(runs[1]!.transcript!.map((turn) => turn.role)).toEqual(["prompt", "reply", "prompt", "reply"]);
     expect(retried.trace.statuses.at(-1)).toContain("## Shrike · warnings\n\n<!-- shrike:decision -->\nNothing blocks the merge.\n\n| Review | Score | Result | |\n| --- | --- | --- | --- |\n| code-review | 70 | warn, 1 finding | [review](https://r/review) |");
     const unscored = fakes(
-      { "code-review": [report("warn"), report("warn")], shriken: [`\`\`\`markdown\n${SUMMARY}\n\`\`\``, `\`\`\`markdown\n${SUMMARY}\n\`\`\`\n\`\`\`json\n{"scores": {"slop-review": 3}}\n\`\`\``] },
+      { "code-review": [report("warn"), report("warn")], shriken: [`\`\`\`markdown\n${SUMMARY}\n\`\`\``, `\`\`\`markdown\n${SUMMARY}\n\`\`\`\n\`\`\`json\n{"decision": "merge", "scores": {"slop-review": 3}}\n\`\`\``] },
       pr,
     );
     const unscoredRuns = await runJob(
@@ -1245,7 +1245,7 @@ describe("capture", () => {
     const shrikenPrompt = trace.sessions[2]!.prompts[0]!;
     expect(shrikenPrompt).toContain(`# Screenshots Shrike took before and after the change\n- alt: before home, url: ${url("before-home.png")}\n- alt: after home, url: ${url("after-home.png")}\n`);
     expect(shrikenPrompt).not.toContain("## Review: capture");
-    expect(shrikenPrompt).toContain("with one integer for each of code-review.");
+    expect(shrikenPrompt).toContain("The scores hold one integer for each of code-review.");
     expect(runs[2]!.report?.scores).toEqual({ "code-review": 70 });
     expect(await git(dir, ["worktree", "list"])).not.toContain("shrike-base-");
     expect(await readFile(join(dir, "marker.txt"), "utf8")).toBe("head");
