@@ -93,7 +93,14 @@ describe("checkShriken", () => {
   });
 
   test("refuses the shapes that break the page", () => {
-    expect(() => checkShriken("One paragraph only.")).toThrow("1 paragraphs");
+    expect(() => checkShriken("One paragraph only.")).toThrow("a last paragraph taking a position");
+    expect(() => checkShriken("One.
+
+Two.
+
+Three.
+
+Four.")).not.toThrow();
     expect(() => checkShriken("Does a thing.\n\nMerge it.\n\n```diff\n+x\n```")).toThrow("end with the paragraph that takes a position");
     expect(() => checkShriken("Does a thing.\n\n[file:a.ts:7]\n```diff\n+x\n```\n\nMerge it.")).toThrow("only reference tokens");
     expect(() => checkShriken("Does a thing:\n\n```diff\n+x\n```\n\n```suggestion\ny\n```\n\nMerge it.")).toThrow("right after the sentence");

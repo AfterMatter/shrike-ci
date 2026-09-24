@@ -132,8 +132,8 @@ export function checkShriken(document: string): void {
   const prose = kinds.filter((kind) => kind === "prose").length;
   const problem = inside
     ? "a code block is never closed"
-    : prose < 2 || prose > 3
-      ? `the summary has ${prose} paragraphs instead of two or three`
+    : prose < 2
+      ? "the summary needs a paragraph on the change and a last paragraph taking a position"
       : kinds.includes("label")
         ? "a line holds only reference tokens; put each token inside the sentence it supports"
         : kinds.at(-1) !== "prose"
