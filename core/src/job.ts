@@ -66,8 +66,8 @@ export function jobFromEvent(name: string, payload: unknown): Job | null {
     if (pr === undefined || trigger === null || !TRUSTED.has(event.comment?.author_association ?? "")) return null;
     const { words, text } = trigger;
     const mode = words[1] === "ci" || words[1] === "all" ? words[1] : undefined;
-    const autofix = words[0] === "autofix" ? (mode ?? "all") : undefined;
-    const fix = autofix === "all" ? words.slice(mode ? 2 : 1) : [];
+    const fix = words[0] === "autofix" ? words.slice(mode ? 2 : 1) : [];
+    const autofix = words[0] === "autofix" ? (fix.length ? "all" : mode ?? "all") : undefined;
     const replyTo = name === "pull_request_review_comment" && event.comment?.id ? { replyTo: event.comment.id } : {};
     return { ...repo, pr, trigger: "comment", reviews: autofix ? [] : words, ...(autofix ? { autofix, ...(fix.length ? { fix } : {}) } : text ? { prompt: text, ...replyTo } : {}) };
   }

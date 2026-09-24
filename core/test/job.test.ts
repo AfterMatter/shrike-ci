@@ -72,7 +72,9 @@ describe("jobFromEvent", () => {
     expect(at("shrike autofix all")).toMatchObject({ reviews: [], autofix: "all" });
     expect(at("shrike autofix all code-review")).toMatchObject({ reviews: [], autofix: "all", fix: ["code-review"] });
     expect(at("shrike autofix code-review slop-review")).toMatchObject({ reviews: [], autofix: "all", fix: ["code-review", "slop-review"] });
-    expect(at("shrike autofix ci slop-review")).toEqual({ owner: "forloopcodes", repo: "shrike", repositoryId: 501, installationId: undefined, pr: 4, trigger: "comment", reviews: [], autofix: "ci" });
+    expect(at("shrike autofix ci slop-review")).toEqual({ owner: "forloopcodes", repo: "shrike", repositoryId: 501, installationId: undefined, pr: 4, trigger: "comment", reviews: [], autofix: "all", fix: ["slop-review"] });
+    expect(at("shrike autofix ci slop-review")).toEqual(at("shrike autofix slop-review"));
+    expect(at("shrike autofix ci")).not.toHaveProperty("fix");
     expect(at("shrike autofix")).not.toHaveProperty("fix");
     expect(at("shrike slop-review")).not.toHaveProperty("autofix");
     expect(at("shrike ci")).toMatchObject({ reviews: ["ci"] });
