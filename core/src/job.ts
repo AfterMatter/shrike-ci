@@ -10,6 +10,7 @@ export const jobSchema = z.object({
   trigger: z.enum(["pull_request", "comment", "dispatch", "action"]),
   reviews: z.array(z.string().regex(/^[a-z0-9-]+$/)).default([]),
   autofix: z.enum(["ci", "all"]).optional(),
+  fix: z.array(z.string().regex(/^[a-z0-9-]+$/)).optional(),
   prompt: z.string().min(1).optional(),
   replyTo: z.number().int().positive().optional(),
   installationId: z.number().int().optional(),
@@ -74,8 +75,8 @@ export function jobFromEvent(name: string, payload: unknown): Job | null {
     const skill = /^shrike\/([a-z0-9-]+)$/.exec(event.check_run.name)?.[1];
     const action = event.requested_action.identifier;
     if (pr === undefined || !skill || !CHECK_ACTIONS.some((own) => own.identifier === action)) return null;
-    const asked = action === "fix" ? { autofix: "all" as const } : action === "ask" ? { prompt: `Explain the findings of the ${skill} review on this pull request and how to fix each one.` } : {};
-    return { ...repo, pr, trigger: "action", reviews: action !== "ask" && !OWN_STEPS.has(skill) ? [skill] : [], ...asked };
+    const asked = action === "fix" ? { autofix: "all" as const, ...(OWN_STEPS.has(skill) ? {} : { fix: [skill] }) } : action === "ask" ? { prompt: `Explain the findings of the ${skill} review on this pull request and how to fix each one.` } : {};
+    return { ...repo, pr, trigger: "action", reviews: action === "rerun" && !OWN_STEPS.has(skill) ? [skill] : [], ...asked };
   }
   return null;
 }

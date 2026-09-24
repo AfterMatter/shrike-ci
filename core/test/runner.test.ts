@@ -1170,6 +1170,29 @@ describe("autofix", () => {
     expect(await git(dir, ["log", "-1", "--format=%B"])).toEndWith("\n\nShrike-Autofix: all code-review");
   });
 
+  test("the fix action reruns every review and fixes only the clicked one, without waiting on the others", async () => {
+    const { dir, sha, bare } = await withRemote();
+    const slop = { ...finding, title: "Slop word", body: "Rename the helper." };
+    const { trace, backend, gh } = fakes({ "code-review": [report("warn", [finding]), report("warn", [finding])], "slop-review": [report("warn", [slop]), report("warn", [slop])], autofix: fixed }, prAt(dir, sha), {
+      checks: [[green()]],
+      onFix: (cwd) => writeFile(join(cwd, "a.txt"), "two\n"),
+    });
+    const runs = await runJob(
+      { owner: "o", repo: "r", pr: 1, trigger: "action", reviews: [], autofix: "all", fix: ["code-review"] },
+      { gh, backend, settings: settings({ reviews: ["code-review", "slop-review"], shriken: false, autofix: "all", autofixReviews: ["slop-review"] }), reviews, cwd: dir, log: () => {}, autofix: autofix(bare) },
+    );
+    expect(runs.map((r) => [r.review, r.report?.verdict])).toEqual([
+      ["code-review", "warn"],
+      ["slop-review", "warn"],
+      ["autofix", "pass"],
+    ]);
+    const prompt = trace.sessions.at(-1)!.prompts[0]!;
+    expect(prompt).toContain("so that the code-review findings and the CI turn green.");
+    expect(prompt).not.toContain("slop-review");
+    expect(prompt).not.toContain("Slop word");
+    expect(await git(dir, ["log", "-1", "--format=%B"])).toEndWith("\n\nShrike-Autofix: all code-review");
+  });
+
   test("stops at the attempt limit, on forks, when the checks never finish, and reports an agent that changed nothing", async () => {
     const { dir, bare } = await withRemote();
     for (let at = 0; at < 2; at++) {

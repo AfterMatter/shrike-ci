@@ -35,6 +35,12 @@ describe("plan", () => {
     expect(planOf({ ...job, autofix: "ci", reviews: ["code-review"] }, resolveSettings({}), "Human commit")).toEqual({ mode: "ci", named: [] });
   });
 
+  test("a fix action names its review while every review runs", () => {
+    const listed = resolveSettings({ autofix: "all", autofixReviews: ["slop-review"] });
+    expect(planOf({ ...job, trigger: "action", autofix: "all", fix: ["code-review"] }, listed, "Human commit")).toEqual({ mode: "all", named: ["code-review"] });
+    expect(planOf({ ...job, trigger: "action", autofix: "all", reviews: ["slop-review"], fix: ["code-review"] }, listed, "Human commit")).toEqual({ mode: "all", named: ["code-review"] });
+  });
+
   test("a trailer with reviews carries them over the setting", () => {
     const named = "Shrike autofix: fix\n\nShrike-Autofix: all code-review security-review";
     expect(planOf(job, resolveSettings({ autofix: "all", autofixReviews: ["slop-review"] }), named)).toEqual({ mode: "all", named: ["code-review", "security-review"] });
