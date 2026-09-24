@@ -222,8 +222,8 @@ Rules:
 - Answer with the document inside one \`\`\`\`markdown fenced block of four backticks, so the \`\`\` blocks inside it stay whole, then the \`\`\`json block, and nothing after it.`;
 }
 
-export function buildAutofixPrompt(pr: PullRequest, problems: Problems): string {
-  return `You are Shrike, fixing pull request #${pr.number} of ${pr.owner}/${pr.repo} (${pr.head} -> ${pr.base}) so that ${problems.findings.length ? `the ${problems.findings.map((run) => run.review).join(", ")} findings and the CI` : "the CI"} turn green.
+export function buildAutofixPrompt(pr: PullRequest, mode: AutofixMode, problems: Problems): string {
+  return `You are Shrike, fixing pull request #${pr.number} of ${pr.owner}/${pr.repo} (${pr.head} -> ${pr.base}) so that ${mode === "ci" ? "the CI" : "the Shrike reviews and the CI"} turn green.
 
 The repository is checked out at the pull request head in your working directory. You may edit files and run commands. Make the smallest change that removes each cause below without changing what the pull request sets out to do. Never edit anything under .github/workflows, never skip, disable, delete or weaken a test or a check to make it pass, never commit or push: the runner commits your working tree. When the repository has a command that reproduces a failure, run it before and after your change.
 
