@@ -44,6 +44,15 @@ describe("settings schema", () => {
     expect(() => settingsSchema.parse({ model: "" })).toThrow();
   });
 
+  test("autofix of reviews needs at least one listed review, ci and an unset list do not", () => {
+    expect(() => settingsSchema.parse({ autofix: "all", autofixReviews: [] })).toThrow(/at least one review to fix/);
+    expect(resolveSettings({ autofix: "ci", autofixReviews: [] }).autofixReviews).toEqual([]);
+    expect(resolveSettings({ autofix: "all" })).not.toHaveProperty("autofixReviews");
+    expect(resolveSettings({ autofix: "all", autofixReviews: ["code-review"] }).autofixReviews).toEqual(["code-review"]);
+    expect(() => settingsSchema.parse({ autofix: "all", autofixReviews: ["Code Review"] })).toThrow();
+    expect(() => settingsSchema.parse({ autofix: "all", autofixReviews: "code-review" })).toThrow();
+  });
+
   test("capture needs both the command and a real url, and neither is needed while it is off", () => {
     expect(() => settingsSchema.parse({ capture: true })).toThrow(/capture needs the command/);
     expect(() => settingsSchema.parse({ capture: true, captureCommand: " ", captureUrl: "http://localhost:5173" })).toThrow(/capture needs the command/);

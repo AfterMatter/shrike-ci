@@ -64,9 +64,10 @@ export function jobFromEvent(name: string, payload: unknown): Job | null {
     const trigger = parseTrigger(event.comment?.body);
     if (pr === undefined || trigger === null || !TRUSTED.has(event.comment?.author_association ?? "")) return null;
     const { words, text } = trigger;
-    const autofix = words[0] === "autofix" ? (words[1] === "ci" ? "ci" : "all") : undefined;
+    const mode = words[1] === "ci" || words[1] === "all" ? words[1] : undefined;
+    const autofix = words[0] === "autofix" ? (mode ?? "all") : undefined;
     const replyTo = name === "pull_request_review_comment" && event.comment?.id ? { replyTo: event.comment.id } : {};
-    return { ...repo, pr, trigger: "comment", reviews: autofix ? words.slice(words[1] === "ci" ? 2 : 1) : words, ...(autofix ? { autofix } : text ? { prompt: text, ...replyTo } : {}) };
+    return { ...repo, pr, trigger: "comment", reviews: autofix ? words.slice(mode ? 2 : 1) : words, ...(autofix ? { autofix } : text ? { prompt: text, ...replyTo } : {}) };
   }
   if (name === "check_run" && event.action === "requested_action" && event.check_run && event.requested_action) {
     const pr = event.check_run.pull_requests[0]?.number;
@@ -74,7 +75,7 @@ export function jobFromEvent(name: string, payload: unknown): Job | null {
     const action = event.requested_action.identifier;
     if (pr === undefined || !skill || !CHECK_ACTIONS.some((own) => own.identifier === action)) return null;
     const asked = action === "fix" ? { autofix: "all" as const } : action === "ask" ? { prompt: `Explain the findings of the ${skill} review on this pull request and how to fix each one.` } : {};
-    return { ...repo, pr, trigger: "action", reviews: action === "rerun" && !OWN_STEPS.has(skill) ? [skill] : [], ...asked };
+    return { ...repo, pr, trigger: "action", reviews: action !== "ask" && !OWN_STEPS.has(skill) ? [skill] : [], ...asked };
   }
   return null;
 }

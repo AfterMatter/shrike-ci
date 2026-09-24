@@ -69,7 +69,9 @@ describe("jobFromEvent", () => {
     expect(at("shrike autofix")).toEqual({ owner: "forloopcodes", repo: "shrike", repositoryId: 501, installationId: undefined, pr: 4, trigger: "comment", reviews: [], autofix: "all" });
     expect(at("shrike autofix ci")).toMatchObject({ reviews: [], autofix: "ci" });
     expect(at("shrike Autofix CI")).toMatchObject({ reviews: [], autofix: "ci" });
-    expect(at("shrike autofix all")).toMatchObject({ reviews: ["all"], autofix: "all" });
+    expect(at("shrike autofix all")).toMatchObject({ reviews: [], autofix: "all" });
+    expect(at("shrike autofix all code-review")).toMatchObject({ reviews: ["code-review"], autofix: "all" });
+    expect(at("shrike autofix code-review")).toMatchObject({ reviews: ["code-review"], autofix: "all" });
     expect(at("shrike autofix ci slop-review")).toMatchObject({ reviews: ["slop-review"], autofix: "ci" });
     expect(at("shrike slop-review")).not.toHaveProperty("autofix");
     expect(at("shrike ci")).toMatchObject({ reviews: ["ci"] });
@@ -114,7 +116,9 @@ describe("threads and check actions", () => {
   test("a requested check action maps onto the fix, re-run and ask jobs, only for Shrike's own checks", () => {
     const action = (identifier: string, name = "shrike/code-review", pulls: { number: number }[] = [{ number: 3 }]) =>
       jobFromEvent("check_run", { action: "requested_action", installation, repository, check_run: { name, pull_requests: pulls }, requested_action: { identifier } });
-    expect(action("fix")).toEqual({ owner: "forloopcodes", repo: "shrike", repositoryId: 501, installationId: 77, pr: 3, trigger: "action", reviews: [], autofix: "all" });
+    expect(action("fix")).toEqual({ owner: "forloopcodes", repo: "shrike", repositoryId: 501, installationId: 77, pr: 3, trigger: "action", reviews: ["code-review"], autofix: "all" });
+    expect(action("fix", "shrike/autofix")).toMatchObject({ reviews: [], autofix: "all" });
+    expect(action("fix", "shrike/shriken")).toMatchObject({ reviews: [], autofix: "all" });
     expect(action("rerun")).toEqual({ owner: "forloopcodes", repo: "shrike", repositoryId: 501, installationId: 77, pr: 3, trigger: "action", reviews: ["code-review"] });
     expect(action("rerun", "shrike/shriken")).toMatchObject({ reviews: [] });
     expect(action("ask")).toMatchObject({ reviews: [], prompt: "Explain the findings of the code-review review on this pull request and how to fix each one." });

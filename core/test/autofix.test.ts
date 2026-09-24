@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { attemptsAtHead, commitAndPush, commitTitle, headMessages, modeOf, problemsOf, reviewsGreen, tailOf, trailerMode, waitForChecks } from "../src/autofix";
+import { attemptsAtHead, commitAndPush, commitTitle, fixes, headMessages, planOf, problemsOf, reviewsGreen, tailOf, trailerOf, waitForChecks } from "../src/autofix";
 import { git } from "../src/checkout";
 import type { CheckRun, PullRequest, PullRequestClient } from "../src/github";
 import type { ReviewRun } from "../src/runner";
@@ -19,41 +19,84 @@ const run = (review: string, verdict: "pass" | "warn" | "fail", findings = 0): R
   report: { summary: "s", verdict, findings: Array.from({ length: findings }, (_, at) => ({ path: "a.ts", line: at + 1, severity: "warning" as const, title: `f${at}`, body: "b" })) },
 });
 
-describe("mode", () => {
+describe("plan", () => {
   test("the comment wins over the head commit trailer, which wins over the setting", () => {
     const trailer = "Shrike autofix: fix\n\nBody.\n\nShrike-Autofix: ci";
-    expect(modeOf(job, resolveSettings({}), "Human commit")).toBeNull();
-    expect(modeOf(job, resolveSettings({ autofix: "ci" }), "Human commit")).toBe("ci");
-    expect(modeOf(job, resolveSettings({ autofix: "all" }), trailer)).toBe("ci");
-    expect(modeOf({ ...job, autofix: "all" }, resolveSettings({ autofix: "ci" }), trailer)).toBe("all");
-    expect(modeOf(job, resolveSettings({}), trailer)).toBe("ci");
+    expect(planOf(job, resolveSettings({}), "Human commit")).toBeNull();
+    expect(planOf(job, resolveSettings({ autofix: "ci" }), "Human commit")).toEqual({ mode: "ci", named: [] });
+    expect(planOf(job, resolveSettings({ autofix: "all", autofixReviews: ["code-review"] }), "Human commit")).toEqual({ mode: "all", named: [] });
+    expect(planOf(job, resolveSettings({ autofix: "all" }), trailer)).toEqual({ mode: "ci", named: [] });
+    expect(planOf({ ...job, autofix: "all" }, resolveSettings({ autofix: "ci" }), trailer)).toEqual({ mode: "all", named: [] });
+    expect(planOf(job, resolveSettings({}), trailer)).toEqual({ mode: "ci", named: [] });
   });
 
-  test("trailers are read only as a whole line and attempts count the autofix commits at the head", () => {
-    expect(trailerMode("Shrike-Autofix: all")).toBe("all");
-    expect(trailerMode("see Shrike-Autofix: all")).toBeNull();
-    expect(trailerMode("Shrike-Autofix: always")).toBeNull();
+  test("a comment names its reviews only in all mode", () => {
+    expect(planOf({ ...job, autofix: "all", reviews: ["code-review"] }, resolveSettings({}), "Shrike-Autofix: all slop-review")).toEqual({ mode: "all", named: ["code-review"] });
+    expect(planOf({ ...job, autofix: "ci", reviews: ["code-review"] }, resolveSettings({}), "Human commit")).toEqual({ mode: "ci", named: [] });
+  });
+
+  test("a trailer with reviews carries them over the setting", () => {
+    const named = "Shrike autofix: fix\n\nShrike-Autofix: all code-review security-review";
+    expect(planOf(job, resolveSettings({ autofix: "all", autofixReviews: ["slop-review"] }), named)).toEqual({ mode: "all", named: ["code-review", "security-review"] });
+    expect(planOf(job, resolveSettings({ autofix: "off" }), named)).toEqual({ mode: "all", named: ["code-review", "security-review"] });
+  });
+
+  test("trailers are read only as a whole well formed line", () => {
+    expect(trailerOf("Shrike-Autofix: all")).toEqual({ mode: "all", named: [] });
+    expect(trailerOf("x\n\nShrike-Autofix: ci\nmore")).toEqual({ mode: "ci", named: [] });
+    expect(trailerOf("Shrike-Autofix: all code-review")).toEqual({ mode: "all", named: ["code-review"] });
+    expect(trailerOf("see Shrike-Autofix: all")).toBeNull();
+    expect(trailerOf("see Shrike-Autofix: all code-review")).toBeNull();
+    expect(trailerOf("Shrike-Autofix: always")).toBeNull();
+    expect(trailerOf("Shrike-Autofix: all Code-Review")).toBeNull();
+    expect(trailerOf("Shrike-Autofix: all code-review,slop-review")).toBeNull();
+    expect(trailerOf("Shrike-Autofix: all  code-review")).toBeNull();
+    expect(trailerOf("Shrike-Autofix:all")).toBeNull();
+    expect(trailerOf("Shrike-Autofix: off")).toBeNull();
+    expect(trailerOf("Human commit")).toBeNull();
+  });
+
+  test("attempts count the autofix commits at the head, named or not", () => {
     expect(attemptsAtHead([])).toBe(0);
     expect(attemptsAtHead(["Human", "x\n\nShrike-Autofix: ci"])).toBe(0);
     expect(attemptsAtHead(["x\n\nShrike-Autofix: ci", "y\n\nShrike-Autofix: all", "Human", "z\n\nShrike-Autofix: ci"])).toBe(2);
-    expect(attemptsAtHead(["x\n\nShrike-Autofix: ci", "y\n\nShrike-Autofix: all"])).toBe(2);
+    expect(attemptsAtHead(["x\n\nShrike-Autofix: all code-review", "y\n\nShrike-Autofix: all slop-review cleanup", "z\n\nShrike-Autofix: all"])).toBe(3);
+    expect(attemptsAtHead(["x\n\nShrike-Autofix: all code-review", "see Shrike-Autofix: all code-review"])).toBe(1);
+  });
+
+  test("ci fixes no review, named reviews win over the setting, and no list fixes every review", () => {
+    const listed = resolveSettings({ autofix: "all", autofixReviews: ["code-review"] });
+    const unset = resolveSettings({ autofix: "all" });
+    expect(fixes({ mode: "ci", named: [] }, unset)("code-review")).toBe(false);
+    expect(fixes({ mode: "ci", named: ["code-review"] }, listed)("code-review")).toBe(false);
+    expect(fixes({ mode: "all", named: [] }, unset)("anything")).toBe(true);
+    expect(fixes({ mode: "all", named: [] }, listed)("code-review")).toBe(true);
+    expect(fixes({ mode: "all", named: [] }, listed)("slop-review")).toBe(false);
+    expect(fixes({ mode: "all", named: ["slop-review"] }, listed)("slop-review")).toBe(true);
+    expect(fixes({ mode: "all", named: ["slop-review"] }, listed)("code-review")).toBe(false);
+    expect(fixes({ mode: "all", named: ["slop-review"] }, unset)("code-review")).toBe(false);
   });
 });
 
 describe("problems", () => {
   const gh = { async jobLog(_pr: PullRequest, jobId: number) { return jobId === 22 ? "2026-09-13T10:00:00.1234567Z npm ERR! failed\n\n2026-09-13T10:00:01.0000000Z exit 1\n" : Promise.reject(new Error("no")); } } as unknown as PullRequestClient;
 
-  test("failing checks get their log tail, pending ones are listed, reviews only count in all mode", async () => {
+  test("failing checks get their log tail, pending ones are listed, findings only come from fixable reviews", async () => {
     const checks = [check("test", "completed", "failure", 22), check("lint", "completed", "timed_out", 23), check("ok", "completed", "success", 24), check("skip", "completed", "skipped"), check("deploy", "in_progress", null)];
     const runs = [run("code-review", "warn", 2), run("slop-review", "pass"), run("security-review", "fail", 0)];
-    const all = await problemsOf(gh, pr, "all", runs, checks, "t");
+    const all = await problemsOf(gh, pr, () => true, runs, checks, "t");
     expect(all.failures).toEqual([
       { name: "test", url: null, log: "npm ERR! failed\nexit 1" },
       { name: "lint", url: null, log: "" },
     ]);
     expect(all.findings.map((own) => own.review)).toEqual(["code-review"]);
     expect(all.pending.map((own) => own.name)).toEqual(["deploy"]);
-    expect((await problemsOf(gh, pr, "ci", runs, checks, "t")).findings).toEqual([]);
+    expect((await problemsOf(gh, pr, () => false, runs, checks, "t")).findings).toEqual([]);
+    const scoped = [...runs, run("slop-review", "fail", 1)];
+    const only = await problemsOf(gh, pr, fixes({ mode: "all", named: ["slop-review"] }, resolveSettings({})), scoped, checks, "t");
+    expect(only.findings.map((own) => own.review)).toEqual(["slop-review"]);
+    expect(only.findings.map((own) => own.review)).not.toContain("code-review");
+    expect(only.failures.map((own) => own.name)).toEqual(["test", "lint"]);
   });
 
   test("green means every review is done and passed", () => {
@@ -103,7 +146,7 @@ describe("commit and push", () => {
     const { work, bare } = await repos();
     await writeFile(join(work, "a.txt"), "two\n");
     await writeFile(join(work, "new.txt"), "n\n");
-    const sha = await commitAndPush(work, pr, "ci", "Fix the failing test\n\nThe assertion expected two.", identity, bare);
+    const sha = await commitAndPush(work, pr, { mode: "ci", named: [] }, "Fix the failing test\n\nThe assertion expected two.", identity, bare);
     expect(sha).toBe(await git(work, ["rev-parse", "HEAD"]));
     expect(await git(bare, ["rev-parse", "refs/heads/feature"])).toBe(sha!);
     const messages = await headMessages(work);
@@ -114,22 +157,31 @@ describe("commit and push", () => {
     expect(await git(work, ["status", "--porcelain"])).toBe("");
   });
 
+  test("named reviews ride in the trailer and read back as the same plan", async () => {
+    const { work, bare } = await repos();
+    await writeFile(join(work, "a.txt"), "two\n");
+    await commitAndPush(work, pr, { mode: "all", named: ["code-review", "slop-review"] }, "Fix", identity, bare);
+    const [head] = await headMessages(work);
+    expect(head!.split("\n").at(-1)).toBe("Shrike-Autofix: all code-review slop-review");
+    expect(trailerOf(head!)).toEqual({ mode: "all", named: ["code-review", "slop-review"] });
+  });
+
   test("changes under the workflows folder are thrown away, and nothing else means no commit", async () => {
     const { work, bare } = await repos();
-    expect(await commitAndPush(work, pr, "all", "Nothing", identity, bare)).toBeNull();
+    expect(await commitAndPush(work, pr, { mode: "all", named: [] }, "Nothing", identity, bare)).toBeNull();
     await Bun.write(join(work, ".github", "workflows", "ci.yml"), "on: push\n");
-    expect(await commitAndPush(work, pr, "all", "Nothing", identity, bare)).toBeNull();
+    expect(await commitAndPush(work, pr, { mode: "all", named: [] }, "Nothing", identity, bare)).toBeNull();
     expect(await git(work, ["status", "--porcelain"])).toBe("");
     await Bun.write(join(work, ".github", "workflows", "ci.yml"), "on: push\n");
     await writeFile(join(work, "a.txt"), "three\n");
-    expect(await commitAndPush(work, pr, "all", "Real fix", identity, bare)).not.toBeNull();
+    expect(await commitAndPush(work, pr, { mode: "all", named: [] }, "Real fix", identity, bare)).not.toBeNull();
     expect(await git(work, ["show", "--stat", "--format=", "HEAD"])).not.toContain("workflows");
   });
 
   test("a failed push never leaks the token", async () => {
     const { work } = await repos();
     await writeFile(join(work, "a.txt"), "two\n");
-    const failure = await commitAndPush(work, pr, "ci", "Fix", identity, join(work, "missing-secret-token")).then(() => null, (error: Error) => error.message);
+    const failure = await commitAndPush(work, pr, { mode: "ci", named: [] }, "Fix", identity, join(work, "missing-secret-token")).then(() => null, (error: Error) => error.message);
     expect(failure).toMatch(/git push failed/);
     expect(failure).toContain("missing-***");
     expect(failure).not.toContain("secret-token");

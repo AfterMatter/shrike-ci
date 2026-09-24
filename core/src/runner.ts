@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { attemptsAtHead, AUTOFIX, commitAndPush, headMessages, modeOf, problemsOf, reviewsGreen, waitForChecks, type AutofixDeps } from "./autofix";
+import { attemptsAtHead, AUTOFIX, commitAndPush, fixes, headMessages, planOf, problemsOf, reviewsGreen, waitForChecks, type AutofixDeps, type Plan } from "./autofix";
 import type { AgentSession, Backend } from "./backends";
 import { baseWorktree, CAPTURE, captureHeadline, captureOf, collect, MEDIA_BRANCH, mediaPath, parsePlan, parseTaken, renderCapture, serve, type CaptureDeps, type Side } from "./capture";
 import { decisionIn, patchIn, plainDecision, renderCard, type Card, type OpenItem } from "./card";
@@ -14,7 +14,7 @@ import { conclusionOf, headline, splitFlagged, STATUS_MARKER, type CheckHandle, 
 import type { Job } from "./job";
 import { ASK, askReview, AUTOFIX_RETRY_PROMPT, buildAutofixPrompt, buildCapturePlanPrompt, buildCaptureShotsPrompt, buildPrompt, buildShrikenPrompt, CAPTURE_PLAN_RETRY_PROMPT, CAPTURE_TAKEN_RETRY_PROMPT, RETRY_PROMPT, SHRIKEN_RETRY_PROMPT, VERIFY_PROMPT } from "./prompt";
 import { checkShriken, parseReport, parseShriken, parseShrikenCall, shrikenReferences, topFinding, verdictOf, type Capture, type Finding, type Judgement, type Report } from "./report";
-import type { AutofixMode, Review, Settings } from "./settings";
+import type { Review, Settings } from "./settings";
 import { flag, judge, lineReader, renderThread, type Flagged, type Thread } from "./threads";
 
 export interface Turn {
@@ -341,9 +341,11 @@ export async function runJob(job: Job, deps: RunDeps): Promise<ReviewRun[]> {
       }
     });
   };
-  const fix = async (mode: AutofixMode, attempts: number) => {
+  const fix = async (plan: Plan, attempts: number) => {
     const settled = runs.filter((run) => !OWN.has(run.review));
-    if (mode === "ci" && !reviewsGreen(settled)) return deps.log("[autofix] the reviews are not green, ci mode fixes nothing yet");
+    const fixable = fixes(plan, deps.settings);
+    const held = plan.named.length ? [] : settled.filter((run) => !fixable(run.review) && !reviewsGreen([run])).map((run) => run.review);
+    if (held.length && !job.autofix) return deps.log(`[autofix] ${held.join(", ")} not green and not autofixed, nothing fixed yet`);
     const run: ReviewRun = { review: AUTOFIX, backend: deps.backend.name, model, status: "queued" };
     runs.push(run);
     await step(run, async (opened, check) => {
@@ -351,16 +353,17 @@ export async function runJob(job: Job, deps: RunDeps): Promise<ReviewRun[]> {
         run.report = { summary, verdict, findings: [] };
         await check.finish(verdict === "fail" ? "failure" : verdict === "warn" ? "neutral" : "success", headline(summary), summary);
       };
+      if (held.length) return done(`${held.join(", ")} must pass before Shrike fixes anything.`, "warn");
       if (pr.fork) return done("Shrike cannot push to a fork.", "fail");
       if (attempts >= deps.settings.autofixLimit) return done(`Stopped after ${attempts} autofix commits in a row. Push a commit to start again.`, "fail");
       const checks = await waitForChecks(deps.gh, pr, deps.autofix!, (line) => deps.log(`[autofix] ${line}`));
       const identity = await deps.autofix!.identity();
-      const problems = await problemsOf(deps.gh, pr, mode, settled, checks, identity.token);
+      const problems = await problemsOf(deps.gh, pr, fixable, settled, checks, identity.token);
       if (problems.pending.length) return done(`Gave up waiting for ${problems.pending.map((check) => check.name).join(", ")}.`, "fail");
       if (!problems.failures.length && !problems.findings.length) return done("Everything is green, nothing to fix.", "pass");
       const { session } = await opened({ write: true });
-      const summary = await ask(run, session, buildAutofixPrompt(pr, mode, problems), AUTOFIX_RETRY_PROMPT, parseShriken, deps.log);
-      const sha = await commitAndPush(deps.cwd, pr, mode, summary, identity, deps.autofix!.remote);
+      const summary = await ask(run, session, buildAutofixPrompt(pr, problems), AUTOFIX_RETRY_PROMPT, parseShriken, deps.log);
+      const sha = await commitAndPush(deps.cwd, pr, plan, summary, identity, deps.autofix!.remote);
       if (sha === null) return done(`Changed nothing.\n\n${summary}`, "warn");
       deps.log(`[autofix] pushed ${sha.slice(0, 7)} to ${pr.head}`);
       await done(`Pushed ${sha.slice(0, 7)}: ${summary}`, "pass");
@@ -396,8 +399,8 @@ export async function runJob(job: Job, deps: RunDeps): Promise<ReviewRun[]> {
       });
     }
     const messages = deps.autofix ? await headMessages(deps.cwd) : [];
-    const mode = deps.autofix ? modeOf(job, deps.settings, messages[0] ?? "") : null;
-    if (mode) await fix(mode, attemptsAtHead(messages));
+    const plan = deps.autofix ? planOf(job, deps.settings, messages[0] ?? "") : null;
+    if (plan) await fix(plan, attemptsAtHead(messages));
   } finally {
     await shared?.close();
     await chain;

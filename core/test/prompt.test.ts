@@ -36,7 +36,17 @@ describe("buildShrikenPrompt", () => {
     const grouped: ReviewRun = { review: "security-review", backend: "b", model: "m", status: "done", report: { summary: "s", verdict: "fail", findings: [{ path: "a.ts", line: 3, severity: "error", title: "Unchecked id", body: "Trusts the id.", suggestion: "own();", related: [{ path: "b.ts", line: 9, startLine: 7, suggestion: "check();" }, { path: "c.ts", line: 1 }, { path: "d.ts", line: 4, suggestion: "" }] }] } };
     const listed = "1. a.ts:3 [error] Unchecked id\nTrusts the id.\n```suggestion\nown();\n```\nAlso at b.ts:7-9\n```\ncheck();\n```\nAlso at c.ts:1\nAlso at d.ts:4\nDelete these lines.";
     expect(buildShrikenPrompt(pr, history, [grouped])).toContain(`## Review: security-review\nVerdict: fail\nSummary: s\n${listed}\n\n# Diff`);
-    expect(buildAutofixPrompt(pr, "all", { failures: [], findings: [grouped], pending: [] })).toContain(`## Review: security-review (fail)\n${listed}\n\n# Output contract`);
+    expect(buildAutofixPrompt(pr, { failures: [], findings: [grouped], pending: [] })).toContain(`## Review: security-review (fail)\n${listed}\n\n# Output contract`);
+  });
+
+  test("the autofix goal names the reviews with findings, or only the CI", () => {
+    const failure = { name: "test", url: null, log: "boom" };
+    const named = buildAutofixPrompt(pr, { failures: [failure], findings: [runs[0]!, { ...runs[0]!, review: "security-review" }], pending: [] });
+    expect(named).toStartWith("You are Shrike, fixing pull request #4 of o/r (f -> main) so that the code-review, security-review findings and the CI turn green.\n");
+    const ci = buildAutofixPrompt(pr, { failures: [failure], findings: [], pending: [] });
+    expect(ci).toStartWith("You are Shrike, fixing pull request #4 of o/r (f -> main) so that the CI turn green.\n");
+    expect(ci).toContain("# Review findings to resolve\n(none)");
+    expect(ci).not.toContain("code-review");
   });
 
   test("asks for short referenced paragraphs with at most three diff, suggestion or image blocks", () => {

@@ -1006,7 +1006,7 @@ describe("autofix", () => {
     const fix = trace.sessions.at(-1)!;
     expect(fix.write).toBe(true);
     expect(trace.sessions.slice(0, -1).every((s) => !s.write)).toBe(true);
-    expect(fix.prompts[0]).toContain("You are Shrike, fixing pull request #1 of o/r (f -> main) so that the Shrike reviews and the CI turn green.");
+    expect(fix.prompts[0]).toContain("You are Shrike, fixing pull request #1 of o/r (f -> main) so that the code-review findings and the CI turn green.");
     expect(fix.prompts[0]).toContain("## test (https://github.com/o/r/actions/runs/1/job/22)\n```\nFAIL test/a.test.ts\nexpected 2, got 1\n```");
     expect(fix.prompts[0]).toContain("## Review: code-review (warn)\n1. a.txt:1 [warning] Wrong count\nCounts the header.");
     expect(fix.prompts[0]).toContain("Never edit anything under .github/workflows");
@@ -1064,9 +1064,110 @@ describe("autofix", () => {
       { gh: carried.gh, backend: carried.backend, settings: settings(), reviews, cwd: dir, log: () => {}, autofix: autofix(bare) },
     );
     expect(next.at(-1)!.report!.verdict).toBe("pass");
-    expect(carried.trace.sessions.at(-1)!.prompts[0]).toContain("so that the Shrike reviews and the CI turn green");
+    expect(carried.trace.sessions.at(-1)!.prompts[0]).toContain("so that the code-review findings and the CI turn green");
     expect(carried.trace.sessions.at(-1)!.prompts[0]).toContain("# Failing checks\n(none)");
     expect(await git(dir, ["log", "-1", "--format=%B"])).toContain("Shrike-Autofix: all");
+  });
+
+  test("only the listed reviews' findings reach the fix while an unlisted review passes", async () => {
+    const { dir, sha, bare } = await withRemote();
+    const other = { ...finding, severity: "info" as const, title: "Slop word", body: "Rename the helper." };
+    const { trace, backend, gh } = fakes({ "code-review": [report("warn", [finding]), report("warn", [finding])], "slop-review": [report("pass", [other]), report("pass", [other])], autofix: fixed }, prAt(dir, sha), {
+      checks: [[green()]],
+      onFix: (cwd) => writeFile(join(cwd, "a.txt"), "two\n"),
+    });
+    const runs = await runJob(
+      { owner: "o", repo: "r", pr: 1, trigger: "pull_request", reviews: [] },
+      { gh, backend, settings: settings({ reviews: ["code-review", "slop-review"], shriken: false, autofix: "all", autofixReviews: ["code-review"] }), reviews, cwd: dir, log: () => {}, autofix: autofix(bare) },
+    );
+    expect(runs.map((r) => [r.review, r.report?.verdict])).toEqual([
+      ["code-review", "warn"],
+      ["slop-review", "pass"],
+      ["autofix", "pass"],
+    ]);
+    const prompt = trace.sessions.at(-1)!.prompts[0]!;
+    expect(prompt).toContain("so that the code-review findings and the CI turn green.");
+    expect(prompt).toContain("## Review: code-review (warn)\n1. a.txt:1 [warning] Wrong count");
+    expect(prompt).not.toContain("slop-review");
+    expect(prompt).not.toContain("Slop word");
+    expect(await git(dir, ["log", "-1", "--format=%B"])).toEndWith("\n\nShrike-Autofix: all");
+  });
+
+  test("an asked for autofix reports the reviews it waits on as its own warning", async () => {
+    const { dir, sha, bare } = await withRemote();
+    const { trace, backend, gh } = fakes({ "code-review": [report("warn", [finding]), report("warn", [finding])], "slop-review": [report("warn"), report("warn")], autofix: fixed }, prAt(dir, sha), { checks: [[failing()]] });
+    const asked: string[] = [];
+    const runs = await runJob(
+      { owner: "o", repo: "r", pr: 1, trigger: "comment", reviews: [], autofix: "all" },
+      { gh, backend, settings: settings({ reviews: ["code-review", "slop-review"], shriken: false, autofixReviews: ["code-review"] }), reviews, cwd: dir, log: () => {}, autofix: autofix(bare, asked) },
+    );
+    expect(runs.at(-1)).toMatchObject({ review: "autofix", status: "done", report: { summary: "slop-review must pass before Shrike fixes anything.", verdict: "warn", findings: [] } });
+    expect(trace.checks.at(-1)).toMatchObject({ review: "autofix", conclusion: "neutral" });
+    expect(trace.polls).toBe(0);
+    expect(asked).toEqual([]);
+    expect(trace.sessions.every((s) => !s.write)).toBe(true);
+    expect(await git(dir, ["rev-parse", "HEAD"])).toBe(sha);
+  });
+
+  test("an unlisted review that is not green holds the fix back without polling the checks", async () => {
+    const { dir, sha, bare } = await withRemote();
+    const { trace, backend, gh } = fakes({ "code-review": [report("warn", [finding]), report("warn", [finding])], "slop-review": [report("warn"), report("warn")], autofix: fixed }, prAt(dir, sha), { checks: [[failing()]] });
+    const asked: string[] = [];
+    const logs: string[] = [];
+    const runs = await runJob(
+      { owner: "o", repo: "r", pr: 1, trigger: "pull_request", reviews: [] },
+      { gh, backend, settings: settings({ reviews: ["code-review", "slop-review"], shriken: false, autofix: "all", autofixReviews: ["code-review"] }), reviews, cwd: dir, log: (line) => logs.push(line), autofix: autofix(bare, asked) },
+    );
+    expect(runs.map((r) => r.review)).toEqual(["code-review", "slop-review"]);
+    expect(trace.polls).toBe(0);
+    expect(trace.logs).toEqual([]);
+    expect(asked).toEqual([]);
+    expect(trace.sessions.every((s) => !s.write)).toBe(true);
+    expect(trace.checks.map((check) => check.review)).not.toContain("autofix");
+    expect(logs).toContain("[autofix] slop-review not green and not autofixed, nothing fixed yet");
+    expect(await git(dir, ["rev-parse", "HEAD"])).toBe(sha);
+    expect(await git(bare, ["rev-parse", "--verify", "--quiet", "refs/heads/f"]).catch(() => "")).toBe("");
+  });
+
+  test("a fix named on one review carries that review in the trailer, fixes no other and never waits on the others", async () => {
+    const { dir, sha, bare } = await withRemote();
+    const listed = settings({ reviews: ["code-review", "slop-review"], shriken: false, autofix: "all", autofixReviews: ["code-review", "slop-review"] });
+    const first = fakes({ "code-review": [report("warn", [finding]), report("warn", [finding])], autofix: fixed }, prAt(dir, sha), { checks: [[green()]], onFix: (cwd) => writeFile(join(cwd, "a.txt"), "two\n") });
+    const runs = await runJob({ owner: "o", repo: "r", pr: 1, trigger: "action", reviews: ["code-review"], autofix: "all" }, { gh: first.gh, backend: first.backend, settings: listed, reviews, cwd: dir, log: () => {}, autofix: autofix(bare) });
+    expect(runs.map((r) => [r.review, r.report?.verdict])).toEqual([
+      ["code-review", "warn"],
+      ["autofix", "pass"],
+    ]);
+    expect(await git(dir, ["log", "-1", "--format=%B"])).toEndWith("\n\nShrike-Autofix: all code-review");
+    const head = await git(dir, ["rev-parse", "HEAD"]);
+
+    const slop = { ...finding, title: "Slop word", body: "Rename the helper." };
+    const carried = fakes({ "code-review": [report("pass"), report("pass")], "slop-review": [report("warn", [slop]), report("warn", [slop])], autofix: fixed }, prAt(dir, head), {
+      checks: [[failing()]],
+      onFix: (cwd) => writeFile(join(cwd, "a.txt"), "ci\n"),
+    });
+    const carriedRuns = await runJob({ owner: "o", repo: "r", pr: 1, trigger: "pull_request", reviews: [] }, { gh: carried.gh, backend: carried.backend, settings: listed, reviews, cwd: dir, log: () => {}, autofix: autofix(bare) });
+    expect(carriedRuns.map((r) => [r.review, r.report?.verdict])).toEqual([
+      ["code-review", "pass"],
+      ["slop-review", "warn"],
+      ["autofix", "pass"],
+    ]);
+    const prompt = carried.trace.sessions.at(-1)!.prompts[0]!;
+    expect(prompt).toContain("so that the CI turn green.");
+    expect(prompt).not.toContain("slop-review");
+    expect(prompt).not.toContain("Slop word");
+    expect(await git(dir, ["log", "-1", "--format=%B"])).toEndWith("\n\nShrike-Autofix: all code-review");
+    const next = await git(dir, ["rev-parse", "HEAD"]);
+    expect(next).not.toBe(head);
+
+    const again = fakes({ "code-review": [report("warn", [finding]), report("warn", [finding])], "slop-review": [report("pass"), report("pass")], autofix: fixed }, prAt(dir, next), {
+      checks: [[failing()]],
+      onFix: (cwd) => writeFile(join(cwd, "a.txt"), "three\n"),
+    });
+    const againRuns = await runJob({ owner: "o", repo: "r", pr: 1, trigger: "pull_request", reviews: [] }, { gh: again.gh, backend: again.backend, settings: listed, reviews, cwd: dir, log: () => {}, autofix: autofix(bare) });
+    expect(againRuns.at(-1)).toMatchObject({ review: "autofix", status: "done", report: { verdict: "pass" } });
+    expect(again.trace.sessions.at(-1)!.prompts[0]).toContain("so that the code-review findings and the CI turn green.");
+    expect(await git(dir, ["log", "-1", "--format=%B"])).toEndWith("\n\nShrike-Autofix: all code-review");
   });
 
   test("stops at the attempt limit, on forks, when the checks never finish, and reports an agent that changed nothing", async () => {

@@ -13,10 +13,12 @@ export const settingsSchema = z.strictObject({
   shriken: z.boolean().default(true),
   autofix: z.enum(["off", "ci", "all"]).default("off"),
   autofixLimit: z.number().int().min(1).max(20).default(5),
+  autofixReviews: z.array(z.string().regex(/^[a-z0-9-]+$/)).optional(),
   capture: z.boolean().default(false),
   captureCommand: z.string().max(500).default(""),
   captureUrl: z.union([z.literal(""), z.url({ protocol: /^https?$/ })]).default(""),
-}).refine((settings) => !settings.capture || (settings.captureCommand.trim() !== "" && settings.captureUrl !== ""), { message: "capture needs the command that serves the app and the url it answers on" });
+}).refine((settings) => !settings.capture || (settings.captureCommand.trim() !== "" && settings.captureUrl !== ""), { message: "capture needs the command that serves the app and the url it answers on" })
+  .refine((settings) => settings.autofix !== "all" || settings.autofixReviews?.length !== 0, { message: "autofix of reviews and CI needs at least one review to fix, choose CI to fix only the checks" });
 
 export const reviewSchema = z.object({
   name: z
