@@ -2,8 +2,7 @@ import { expect, test } from "bun:test";
 import { access, mkdtemp, readdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { toolOutput } from "../src/backends/acp";
-import { opencodeBackend, opencodeConfig } from "../src/backends/opencode";
+import { acpBackend, opencodeConfig, toolOutput } from "../src/backends/acp";
 import { fileIn } from "../src/capture";
 import { git } from "../src/checkout";
 
@@ -58,7 +57,7 @@ test.skipIf(!live)("acp backend with a capture directory opens a page in the bro
   const port = 20_000 + Math.floor(Math.random() * 20_000);
   const app = Bun.spawn(["bun", "run", SERVER, String(port)], { cwd, stdout: "ignore", stderr: "ignore" });
   const logs: string[] = [];
-  const session = await opencodeBackend().open({ cwd, captureDir, log: (line) => logs.push(line) });
+  const session = await acpBackend.open({ cwd, captureDir, log: (line) => logs.push(line) });
   try {
     for (let tries = 0; tries < 30 && !(await fetch(`http://127.0.0.1:${port}/`).then(() => true, () => false)); tries++) await new Promise((resolve) => setTimeout(resolve, 500));
     const reply = await session.prompt(
@@ -86,7 +85,7 @@ test.skipIf(!live)("acp backend reads files, cannot edit, and does not leak toke
   await git(cwd, ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "marker-commit"]);
   process.env.GITHUB_TOKEN = "ghs_should_not_leak";
   const logs: string[] = [];
-  const session = await opencodeBackend().open({ cwd, log: (line) => logs.push(line) });
+  const session = await acpBackend.open({ cwd, log: (line) => logs.push(line) });
   try {
     const read = await session.prompt('Read note.txt with your read tool and reply with one ```json block: {"content": "<file content>"}. Nothing else.');
     expect(read.text).toContain("shrike-marker-42");
