@@ -32,7 +32,7 @@ export const askReview = (prompt: string, thread?: Thread): Review => ({
 });
 
 export const SHRIKEN_RETRY_PROMPT =
-  "Your last message did not contain a valid summary. Reply with the two or three paragraphs inside one ````markdown fenced block of four backticks, each code block or image right after the sentence that introduces it and the paragraph taking a position last, a reference token such as [review:<name>] or [finding:<review>#<n>] on every claim, then one ```json fenced block {\"decision\": \"merge\" | \"hold\" | \"reject\", \"scores\": {\"<review>\": <0 to 100>}} with the position of your last paragraph and an integer for every review, and nothing after it.";
+  "Your last message did not contain a valid summary. Reply with the two or three paragraphs inside one ````markdown fenced block of four backticks, in this order: what it does, then its block if any; what the reviews found, then its block if any; last the paragraph taking a position with nothing after it, a reference token such as [review:<name>] or [finding:<review>#<n>] on every claim, then one ```json fenced block {\"decision\": \"merge\" | \"hold\" | \"reject\", \"scores\": {\"<review>\": <0 to 100>}} with the position of your last paragraph and an integer for every review, and nothing after it.";
 
 export const AUTOFIX_RETRY_PROMPT =
   "Your last message did not contain the summary. Reply with one ```markdown fenced block: a first line of at most 70 characters saying what you changed, then one or two short paragraphs, and nothing after it.";
@@ -204,7 +204,7 @@ ${clipDiff(pr.diff)}
 
 # Output contract
 Write the summary a reviewer reads before deciding: two or three paragraphs of plain sentences, at most 90 words each, that tell what the pull request does, what matters in what the reviews found, and what to decide. The last paragraph takes a position in plain words, merge, hold the merge, or do not merge, names the one thing that decides it, and says what would change your mind. No headings, no lists, no tables, no links, no placeholder tokens such as [start] or [end]: the text begins with its first sentence.
-Between the paragraphs, show what the reviewer must see with at most three blocks in total, each on its own lines right after the sentence that introduces it, never after a line of only tokens and never after the last paragraph, so the document starts and ends with a paragraph:
+Between the paragraphs, show what the reviewer must see with at most three blocks in total, each on its own lines right after the sentence that introduces it, never after a line of only tokens and never after the last paragraph, so the document starts and ends with a paragraph. Lay it out in this order: the paragraph on what the pull request does, then the block it introduces if any; the paragraph on what the reviews found, then the block it introduces if any; last, the paragraph that takes a position, with nothing after it. The blocks:
 - a \`\`\`diff block quoting at most 15 lines of the diff above that matter most, right after a sentence naming that file with a [file:<path>:<line>] token
 - a \`\`\`suggestion block copied from a finding, right after a sentence with that finding's token
 - an image as ![alt](url) with a url from the lists above, an image of the description or a before and after screenshot pair; never any other url
