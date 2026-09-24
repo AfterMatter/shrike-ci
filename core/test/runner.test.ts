@@ -227,7 +227,7 @@ describe("runJob", () => {
       ["slop-review", "neutral", "warn: warn finding"],
       ["code-review", "success", "pass: no findings"],
       ["security-review", "failure", "fail: fail finding"],
-      ["shriken", "neutral", "summary written"],
+      ["shriken", "neutral", "hold: summary written"],
     ]);
     expect(runs.every((r) => r.usage?.tokens === 10 && r.startedAt && r.finishedAt)).toBe(true);
     expect(runs.at(-1)!.report).toEqual({ summary: SUMMARY, verdict: "fail", findings: [], scores: { "slop-review": 80, "code-review": 70, "security-review": 40 }, decision: "hold" });
@@ -692,7 +692,7 @@ describe("runJob", () => {
       ["code-review", "pass summary"],
       ["shriken", SUMMARY],
     ]);
-    expect(recovered.trace.checks.at(-1)).toEqual({ review: "shriken", conclusion: "neutral", title: "summary written" });
+    expect(recovered.trace.checks.at(-1)).toEqual({ review: "shriken", conclusion: "neutral", title: "hold: summary written" });
   });
 
   test("shared session keeps one conversation, sends the diff only once and hosts shriken", async () => {
@@ -1239,7 +1239,7 @@ describe("capture", () => {
     expect(trace.checks.map((c) => [c.review, c.conclusion, c.title])).toEqual([
       ["code-review", "success", "pass: no findings"],
       ["capture", "success", "1 page captured before and after"],
-      ["shriken", "neutral", "summary written"],
+      ["shriken", "neutral", "hold: summary written"],
     ]);
     expect(trace.statuses.at(-1)).toContain("| capture |  | 1 page captured before and after |  |");
     const shrikenPrompt = trace.sessions[2]!.prompts[0]!;

@@ -390,7 +390,7 @@ export async function runJob(job: Job, deps: RunDeps): Promise<ReviewRun[]> {
         }, deps.log);
         run.report = { summary, verdict: verdicts.reduce((worst, verdict) => (RANK[verdict] > RANK[worst] ? verdict : worst), "pass"), findings: [], scores, decision };
         card.decision = plainDecision(summary);
-        await check.finish("neutral", "summary written", summary);
+        await check.finish("neutral", `${decision}: summary written`, summary);
       });
     }
     const messages = deps.autofix ? await headMessages(deps.cwd) : [];
