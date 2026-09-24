@@ -46,6 +46,7 @@ describe("buildShrikenPrompt", () => {
     expect(contract).toContain("No headings, no lists, no tables, no links, no placeholder tokens such as [start] or [end]: the text begins with its first sentence.");
     expect(contract).toContain("The last paragraph takes a position in plain words, merge, hold the merge, or do not merge, names the one thing that decides it, and says what would change your mind.");
     expect(contract).toContain('{"decision": "merge" | "hold" | "reject", "scores": {"<review>": <0 to 100>}}. The decision is the position your last paragraph takes');
+    expect(contract).toContain("never hold only because checks have not finished.");
     expect(contract).toContain("a fail verdict cannot score above 60");
     expect(contract).toContain("at most three blocks in total");
     expect(contract).toContain("- a \`\`\`diff block quoting at most 15 lines of the diff above that matter most, right after a sentence naming that file with a [file:<path>:<line>] token");
