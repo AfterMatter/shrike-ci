@@ -20,11 +20,11 @@ on:
   repository_dispatch:
     types: [shrike]
 concurrency:
-  group: shrike-${{ github.event.pull_request.number || github.event.issue.number || github.event.client_payload.pr }}
+  group: shrike-${{ github.event.pull_request.number || github.event.issue.number || github.event.client_payload.pr || github.event.client_payload.chat.id }}
   cancel-in-progress: false
 jobs:
   review:
-    if: github.event_name != 'issue_comment' || (github.event.issue.pull_request && startsWith(github.event.comment.body, 'shrike'))
+    if: github.event_name != 'issue_comment' || startsWith(github.event.comment.body, 'shrike')
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -60,12 +60,17 @@ jobs:
 | Comment `shrike security-review cleanup` | runs only those reviews, in that order |
 | Comment `shrike autofix` or `shrike autofix ci` | runs the configured reviews, then one autofix attempt in `all` or `ci` mode that keeps going on the next pushes until green or the limit |
 | Comment `shrike autofix code-review` (or `shrike autofix ci code-review`) | runs the configured reviews, then fixes only code-review's findings and the CI, whatever `autofixReviews` lists, like the Fix action of its check |
-| Comment `shrike <anything else>` | runs one `ask` review that does what the comment says, reported as the `shrike/ask` check |
-| Reply `shrike <question>` inside a review thread | runs the `ask` review with the thread as context and posts its answer as a reply in that thread |
-| Fix, Re-run or Ask on a `shrike/<review>` check | the Shrike GitHub App dispatches the autofix of that review, that review, or an ask that explains its findings |
-| `repository_dispatch` type `shrike` | runs the job sent by the Shrike GitHub App |
+| Comment `shrike <anything else>` on a PR | runs the agent on the pull request: it answers in a comment and, when the ask needs code, commits to the pull request branch (a new pull request for forks) |
+| Reply `shrike <question>` inside a review thread | runs the agent with the pull request and answers in that thread |
+| Comment `shrike <task>` on an issue | runs the agent on the default branch; changes land on a new `shrike/...` branch with a pull request that closes the issue |
+| Fix, Re-run or Ask on a `shrike/<review>` check | the Shrike GitHub App dispatches the autofix of that review, that review, or an agent answer that explains its findings |
+| `repository_dispatch` type `shrike` | runs the job sent by the Shrike GitHub App, including chats started on the website |
 
-`shriken`, `capture` and `autofix` are reserved names and cannot be requested as reviews.
+`shriken`, `capture`, `autofix` and `agent` are reserved names and cannot be requested as reviews.
+
+### The agent
+
+A chat on the website, a free form comment and the Ask action all run the same agent. It sees the pull request or issue it was asked on, every open pull request (fetched as `pull/<n>`), the repository settings on Shrike and the earlier turns of a chat, and it may edit files and run commands. Its answer uses the Shriken reference tokens plus `[pull:<n>]` and `[settings:<key>]`, which the website turns into links; on GitHub they become plain references. It can offer buttons: a settings change the maintainer applies on the website with their own session, or a follow up ask. Shrike commits what it changed as the App without an autofix trailer, discards changes under `.github/workflows`, and reports the run as `agent`.
 
 Draft pull requests are skipped until marked ready for review. Pull requests from forks get a read only job token, so without the App installed results cannot be posted for them.
 
@@ -80,7 +85,7 @@ Draft pull requests are skipped until marked ready for review. Pull requests fro
 ## Layout
 
 ```
-core/       review engine: job model, prompt, report contract, diff, checkout, GitHub client, threads, card, runner, capture, autofix, settings client, backends/acp
+core/       review engine: job model, prompt, report contract, diff, checkout, GitHub client, threads, card, runner, capture, autofix, agent, settings client, backends/acp
 action/     composite GitHub Action around the engine
 ```
 

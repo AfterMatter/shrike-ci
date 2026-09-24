@@ -1,6 +1,5 @@
 // The one Shrike card on a pull request: verdict, decision, the table of
 // skills, open and resolved findings, folded notes, nits, captures, the link.
-import { ASK } from "./prompt";
 import type { Finding, Report } from "./report";
 import type { ReviewRun } from "./runner";
 
@@ -45,17 +44,24 @@ export const patchIn = (body: string | null): { id: string; sha: string } | null
 
 export const decisionIn = (body: string | null): string | null => /<!-- shrike:decision -->\n([\s\S]*?)(?:\n\n|$)/.exec(body ?? "")?.[1]?.trim() || null;
 
-const READABLE: Record<string, (value: string) => string> = { review: (value) => value, commit: (value) => `\`${value}\``, issue: (value) => `#${value}`, file: (value) => `\`${value.replace(/:\d+$/, "")}\``, finding: () => "" };
+const READABLE: Record<string, (value: string) => string> = { review: (value) => value, commit: (value) => `\`${value}\``, issue: (value) => `#${value}`, pull: (value) => `#${value}`, settings: (value) => `\`${value}\``, finding: () => "" };
+
+export const readable = (text: string, file: (path: string, line: number | null) => string = (path) => `\`${path}\``): string =>
+  text.replace(/\[(finding|review|commit|issue|pull|settings|file):([^\]\s]+)\]/g, (_, kind: string, value: string) => {
+    const [, path, line] = /^(.*?)(?::(\d+))?$/.exec(value)!;
+    return kind === "file" ? file(path!, line ? Number(line) : null) : READABLE[kind]!(value);
+  });
 
 export const plainDecision = (summary: string): string =>
-  summary
-    .replace(/```[\s\S]*?(?:```|(?![\s\S]))|^!\[[^\]]*\]\([^)]*\)\s*$/gm, "\n\n")
-    .split(/\n\s*\n/)
-    .map((paragraph) => paragraph.replace(/\s+/g, " ").trim())
-    .filter(Boolean)
-    .at(-1)!
-    .replace(/(?:\s*\[(?:finding|review|commit|issue|file):[^\]\s]+\])+(?=\s*(?:[.;:!?)]|$))/g, "")
-    .replace(/\[(finding|review|commit|issue|file):([^\]\s]+)\]/g, (_, kind: string, value: string) => READABLE[kind]!(value))
+  readable(
+    summary
+      .replace(/```[\s\S]*?(?:```|(?![\s\S]))|^!\[[^\]]*\]\([^)]*\)\s*$/gm, "\n\n")
+      .split(/\n\s*\n/)
+      .map((paragraph) => paragraph.replace(/\s+/g, " ").trim())
+      .filter(Boolean)
+      .at(-1)!
+      .replace(/(?:\s*\[(?:finding|review|commit|issue|pull|settings|file):[^\]\s]+\])+(?=\s*(?:[.;:!?)]|$))/g, ""),
+  )
     .replace(/\s+([.,;:])/g, "$1")
     .replace(/ {2,}/g, " ");
 
@@ -98,7 +104,7 @@ export function renderCard(runs: ReviewRun[], card: Card = {}): string {
         return mark[0] === open[0] && mark.length >= open.length && !rest!.trim() ? null : open;
       }, null);
       const note = `${head}${fence ? `\n${fence}` : ""}${head === summary ? "" : "\n\n(cut here, the check has the full text)"}`;
-      return [`<details${run.review === ASK && !run.posted ? " open" : ""}><summary>${run.review} said</summary>\n\n${note}\n\n</details>`];
+      return [`<details><summary>${run.review} said</summary>\n\n${note}\n\n</details>`];
     }),
     card.nits?.length ? `<details><summary>Nits (${card.nits.length})</summary>\n\n${card.nits.map(({ finding, skills }) => `- ${at(finding.path, finding.line)}${finding.related?.length ? ` and ${count(finding.related.length, "other place")}` : ""} **${finding.title}** · ${skills.join(", ")}: ${finding.body.split("\n", 1)[0]}`).join("\n")}\n\n</details>` : "",
     card.capture ? `<details><summary>Before and after</summary>\n\n${card.capture}\n\n</details>` : "",

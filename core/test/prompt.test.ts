@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { PullRequest, PullRequestHistory } from "../src/github";
-import { askReview, buildAutofixPrompt, buildCapturePlanPrompt, buildCaptureShotsPrompt, buildPrompt, buildShrikenPrompt, CAPTURE_PLAN_RETRY_PROMPT, CAPTURE_TAKEN_RETRY_PROMPT, VERIFY_PROMPT } from "../src/prompt";
+import { buildAutofixPrompt, buildCapturePlanPrompt, buildCaptureShotsPrompt, buildPrompt, buildShrikenPrompt, CAPTURE_PLAN_RETRY_PROMPT, CAPTURE_TAKEN_RETRY_PROMPT, VERIFY_PROMPT } from "../src/prompt";
 import type { ReviewRun } from "../src/runner";
 
 const pr: PullRequest = { owner: "o", repo: "r", number: 4, title: "Add thing", body: "Closes #2\n![before](https://i/1)", author: "a", base: "main", head: "f", headSha: "abc", baseSha: "base", cloneUrl: "c", fork: false, private: false, files: [], diff: "+added line" };
@@ -175,12 +175,9 @@ describe("buildPrompt", () => {
     expect(buildPrompt(review, pr, { threads: [{ ...thread, line: null, skills: [] }] })).toContain("- 0123456789abcdef at `src/a.ts` [warning] Wrong count (shrike)");
   });
 
-  test("the verify turn asks to confirm, downgrade or drop and to keep the judgements, and the ask review can answer inside a thread", () => {
+  test("the verify turn asks to confirm, downgrade or drop and to keep the judgements", () => {
     expect(VERIFY_PROMPT).toContain("Re-read each finding at its file and line");
     expect(VERIFY_PROMPT).toContain("drop it when it cannot be justified");
     expect(VERIFY_PROMPT).toContain("Keep the thread judgements");
-    expect(askReview("why?").body).toBe("A maintainer asked in a pull request comment:\n\nwhy?\n\nDo what the comment asks. Put the answer in the summary and report only the findings the comment calls for.");
-    const inThread = askReview("why?", thread).body;
-    expect(inThread).toStartWith('A maintainer asked in a pull request comment in the thread at `src/a.ts:3` about "Wrong count":\n\nwhy?\n\nThe thread so far:\n- bob: intended,\n  see the docs\n\nDo what the comment asks. Put the answer in the summary, written as a reply in that thread, and report only');
   });
 });

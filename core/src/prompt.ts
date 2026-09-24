@@ -23,14 +23,6 @@ export const RETRY_PROMPT =
 export const VERIFY_PROMPT =
   "Now verify your own report before it is posted. Re-read each finding at its file and line, and at every related place, with your tools and confirm it from the code: keep it only when you can point at the exact input or path that makes it wrong, downgrade it when it is real but not as bad as stated, drop it when it cannot be justified or the code already handles it. Keep the thread judgements. Reply with only the final ```json fenced block in the same output contract, and nothing else.";
 
-export const ASK = "ask";
-
-export const askReview = (prompt: string, thread?: Thread): Review => ({
-  name: ASK,
-  description: "What a pull request comment asked for",
-  body: `A maintainer asked in a pull request comment${thread ? ` in the thread at \`${thread.path}${thread.line === null ? "" : `:${thread.line}`}\` about "${thread.title}"` : ""}:\n\n${prompt}${thread ? `\n\nThe thread so far:\n${list(thread.replies, (reply) => `- ${reply.author}: ${reply.body}`)}` : ""}\n\nDo what the comment asks. Put the answer in the summary${thread ? ", written as a reply in that thread," : ""} and report only the findings the comment calls for.`,
-});
-
 export const SHRIKEN_RETRY_PROMPT =
   "Your last message did not contain a valid summary. Reply with the two or three paragraphs inside one ````markdown fenced block of four backticks, in this order: what it does, then its block if any; what the reviews found, then its block if any; last the paragraph taking a position with nothing after it, a reference token such as [review:<name>] or [finding:<review>#<n>] on every claim, then one ```json fenced block {\"decision\": \"merge\" | \"hold\" | \"reject\", \"scores\": {\"<review>\": <0 to 100>}} with the position of your last paragraph and an integer for every review, and nothing after it.";
 

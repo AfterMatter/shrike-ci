@@ -64,8 +64,8 @@ describe("renderCard", () => {
     expect(cut).toContain(`\`\`\`ts\n${"x".repeat(3000 - 14)}\n\`\`\`\n\n(cut here, the check has the full text)\n\n</details>`);
     expect(cut).not.toContain("End.");
     expect(body.match(/```/g)!.length % 2).toBe(0);
-    const short = renderCard([run("ask", { report: { summary: "Try:\n\n```ts\nretry()", verdict: "pass", findings: [] } })]);
-    expect(short).toContain("<details open><summary>ask said</summary>\n\nTry:\n\n```ts\nretry()\n```\n\n</details>");
+    const short = renderCard([run("explain", { report: { summary: "Try:\n\n```ts\nretry()", verdict: "pass", findings: [] } })]);
+    expect(short).toContain("<details><summary>explain said</summary>\n\nTry:\n\n```ts\nretry()\n```\n\n</details>");
     expect(short).not.toContain("cut here");
     const inline = renderCard([run("a", { report: { summary: "Wrap the value in ``` before posting.", verdict: "pass", findings: [] } })]);
     expect(inline).toContain("<summary>a said</summary>\n\nWrap the value in ``` before posting.\n\n</details>");

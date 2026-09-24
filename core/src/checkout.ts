@@ -1,5 +1,5 @@
-// Puts a working directory at the pull request head commit.
-// Clones when missing, otherwise fetches refs/pull/N/head.
+// Puts a working directory at a pull request head or branch commit.
+// Clones when missing, otherwise fetches the ref and any extra refspecs.
 import { spawn } from "node:child_process";
 import { access, mkdir } from "node:fs/promises";
 import { join } from "node:path";
@@ -7,9 +7,10 @@ import { join } from "node:path";
 export interface CheckoutTarget {
   dir: string;
   cloneUrl: string;
-  pr: number;
+  ref: string;
   headSha: string;
   token?: string;
+  also?: string[];
 }
 
 export function git(dir: string, args: string[]): Promise<string> {
@@ -26,7 +27,7 @@ export function git(dir: string, args: string[]): Promise<string> {
 
 export const authArgs = (token?: string): string[] => (token ? ["-c", `http.extraheader=AUTHORIZATION: basic ${Buffer.from(`x-access-token:${token}`).toString("base64")}`] : []);
 
-export async function ensureCheckout({ dir, cloneUrl, pr, headSha, token }: CheckoutTarget, log: (line: string) => void): Promise<void> {
+export async function ensureCheckout({ dir, cloneUrl, ref, headSha, token, also = [] }: CheckoutTarget, log: (line: string) => void): Promise<void> {
   const auth = authArgs(token);
   const cloned = await access(join(dir, ".git")).then(() => true, () => false);
   if (!cloned) {
@@ -34,8 +35,8 @@ export async function ensureCheckout({ dir, cloneUrl, pr, headSha, token }: Chec
     log(`cloning into ${dir}`);
     await git(dir, [...auth, "clone", "--quiet", "--no-checkout", cloneUrl, "."]);
   }
-  if ((await git(dir, ["rev-parse", "HEAD"]).catch(() => "")) === headSha) return;
-  log(`fetching pull/${pr}/head (${headSha.slice(0, 7)})`);
-  await git(dir, [...auth, "fetch", "--quiet", "--depth", "50", "origin", `+refs/pull/${pr}/head`]);
+  if (!also.length && (await git(dir, ["rev-parse", "HEAD"]).catch(() => "")) === headSha) return;
+  log(`fetching ${ref.replace(/^refs\/(heads\/)?/, "")} (${headSha.slice(0, 7)})${also.length ? ` and ${also.length} more refs` : ""}`);
+  await git(dir, [...auth, "fetch", "--quiet", "--depth", "50", "origin", `+${ref}`, ...also]);
   await git(dir, ["checkout", "--quiet", "--detach", headSha]);
 }

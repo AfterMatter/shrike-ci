@@ -10,7 +10,7 @@ import { patchId } from "../src/diff";
 import { STATUS_MARKER, type CheckRun, type MediaFile, type PullRequest, type PullRequestClient, type PullRequestHistory } from "../src/github";
 import { VERIFY_PROMPT } from "../src/prompt";
 import type { Finding, Report } from "../src/report";
-import { runJob, runRecord, type ReviewRun, type RunRecord, type Turn } from "../src/runner";
+import { runJob, runRecord, type ReviewRun, type RunRecord, type RunTarget, type Turn } from "../src/runner";
 import { resolveSettings, type Review } from "../src/settings";
 import { fingerprintOf, type Thread } from "../src/threads";
 
@@ -76,6 +76,8 @@ interface Trace {
   polls: number;
   logs: number[];
   published: { branch: string; files: MediaFile[]; message: string; token: string }[];
+  comments: { number: number; body: string }[];
+  opened: { head: string; base: string; title: string; body: string }[];
   peak: number;
 }
 
@@ -88,12 +90,13 @@ interface Fixtures {
   onPrompt?: (text: string, tool: (call: ToolCall) => void) => Promise<void>;
   onFix?: (cwd: string) => Promise<void>;
   onShots?: (side: "before" | "after", captureDir: string, url: string) => Promise<void>;
+  branchFails?: boolean;
 }
 
 function fakes(replies: Record<string, string[]>, pr: PullRequest, fixtures: Fixtures = {}) {
-  const trace: Trace = { sessions: [], reviews: [], checks: [], statuses: [], replies: [], closed: [], copied: [], histories: 0, polls: 0, logs: [], published: [], peak: 0 };
+  const trace: Trace = { sessions: [], reviews: [], checks: [], statuses: [], replies: [], closed: [], copied: [], histories: 0, polls: 0, logs: [], published: [], comments: [], opened: [], peak: 0 };
   const nameOf = (text: string) =>
-    text.includes("You are Shriken") ? "shriken" : text.includes("You are Shrike, fixing") ? "autofix" : text.includes("You are Shrike, preparing before and after") ? "capture" : /running the "([a-z-]+)" review/.exec(text)?.[1];
+    text.includes("You are Shriken") ? "shriken" : text.includes("You are Shrike, an agent") ? "agent" : text.includes("You are Shrike, fixing") ? "autofix" : text.includes("You are Shrike, preparing before and after") ? "capture" : /running the "([a-z-]+)" review/.exec(text)?.[1];
   let opened = 0;
   const backend: Backend = {
     name: "fake",
@@ -112,7 +115,7 @@ function fakes(replies: Record<string, string[]>, pr: PullRequest, fixtures: Fix
           const reply = (replies[review] ?? [])[answered[review] ?? 0];
           answered[review] = (answered[review] ?? 0) + 1;
           if (reply === undefined) throw new Error(`no reply for ${review}`);
-          if (review === "autofix") await fixtures.onFix?.(cwd);
+          if (review === "autofix" || review === "agent") await fixtures.onFix?.(cwd);
           const shots = /^The application at (\S+) now runs (the base branch|the pull request head)/.exec(text);
           if (shots) await fixtures.onShots?.(shots[2] === "the base branch" ? "before" : "after", captureDir!, shots[1]!);
           return { text: reply, usage: { tokens: 10, cost: 0 } };
@@ -167,6 +170,27 @@ function fakes(replies: Record<string, string[]>, pr: PullRequest, fixtures: Fix
     async stickyComment(_pr: PullRequest, _marker: string, body: string | ((previous: string | null) => string)) {
       trace.statuses.push(typeof body === "string" ? body : body(fixtures.previous ?? null));
       return { id: 2, url: `https://c/${STATUS_MARKER}`, previous: fixtures.previous ?? null, update: async (next: string) => void trace.statuses.push(next) };
+    },
+    async repository() {
+      return { cloneUrl: pr.cloneUrl, defaultBranch: "main" };
+    },
+    async branchSha(_owner: string, _repo: string, branch: string) {
+      if (fixtures.branchFails) throw new Error(`branch ${branch} not found`);
+      return git(pr.cloneUrl, ["rev-parse", `refs/heads/${branch}`]);
+    },
+    async openPulls() {
+      return [{ number: 1, title: "Open one", author: "a", head: "f", base: "main", draft: false }];
+    },
+    async issue(_owner: string, _repo: string, number: number) {
+      return { number, title: "Login fails", author: "bo", body: "Steps to reproduce", comments: [] };
+    },
+    async comment(_owner: string, _repo: string, number: number, body: string) {
+      trace.comments.push({ number, body });
+      return `https://gh/c/${number}`;
+    },
+    async openPull(_owner: string, _repo: string, pull: Trace["opened"][number]) {
+      trace.opened.push(pull);
+      return 9;
     },
     async publish(_pr: PullRequest, branch: string, files: MediaFile[], message: string, identity: { token: string }) {
       trace.published.push({ branch, files, message, token: identity.token });
@@ -253,62 +277,6 @@ describe("runJob", () => {
     expect(last).toContain("### Open (2)\n- `new` **[error] fail finding** `f.txt:1` · security-review [thread](https://r/review)\n- `new` **[warning] warn finding** `f.txt:1` · slop-review [thread](https://r/review)");
     expect(last).toEndWith("[Open on Shrike](https://shrike.example/#/o/r/pull/1)");
     expect(last).not.toContain("Resolved since");
-  });
-
-  test("a comment prompt runs one ask review with the comment's words, unless every word names a review", async () => {
-    const { dir, sha } = await repoAtHead();
-    const pr = prAt(dir, sha);
-    const asked = fakes({ ask: [report("pass")] }, pr);
-    const runs = await runJob(
-      { owner: "o", repo: "r", pr: 1, trigger: "comment", reviews: [], prompt: "is the retry loop in api.ts safe?" },
-      { gh: asked.gh, backend: asked.backend, settings: settings({ shriken: false }), reviews, cwd: dir, log: () => {} },
-    );
-    expect(runs.map((r) => [r.review, r.status])).toEqual([["ask", "done"]]);
-    expect(asked.trace.sessions[0]!.prompts[0]).toContain('running the "ask" review');
-    expect(asked.trace.sessions[0]!.prompts[0]).toContain("A maintainer asked in a pull request comment:\n\nis the retry loop in api.ts safe?");
-    expect(asked.trace.checks.map((c) => [c.review, c.conclusion])).toEqual([["ask", "success"]]);
-    expect(asked.trace.statuses.at(-1)).toContain("<details open><summary>ask said</summary>\n\npass summary\n\n</details>");
-
-    const unknown = fakes({ ask: [report("warn"), report("warn")] }, pr);
-    const mixed = await runJob(
-      { owner: "o", repo: "r", pr: 1, trigger: "comment", reviews: ["cleanup", "please"], prompt: "cleanup please" },
-      { gh: unknown.gh, backend: unknown.backend, settings: settings({ shriken: false }), reviews, cwd: dir, log: () => {} },
-    );
-    expect(mixed.map((r) => [r.review, r.status])).toEqual([["ask", "done"]]);
-
-    const named = fakes({ cleanup: [report("pass")] }, pr);
-    const plain = await runJob(
-      { owner: "o", repo: "r", pr: 1, trigger: "comment", reviews: ["cleanup"], prompt: "cleanup" },
-      { gh: named.gh, backend: named.backend, settings: settings({ shriken: false }), reviews, cwd: dir, log: () => {} },
-    );
-    expect(plain.map((r) => [r.review, r.status])).toEqual([["cleanup", "done"]]);
-    expect(named.trace.sessions[0]!.prompts[0]).not.toContain("A maintainer asked");
-
-    const reserved = fakes({}, pr);
-    const refused = await runJob({ owner: "o", repo: "r", pr: 1, trigger: "comment", reviews: ["ask"] }, { gh: reserved.gh, backend: reserved.backend, settings: settings({ shriken: false }), reviews, cwd: dir, log: () => {} });
-    expect(refused.map((r) => [r.review, r.status, r.error])).toEqual([["ask", "error", "ask is what a comment asks for, not a review"]]);
-  });
-
-  test("a question asked inside a Shrike thread is answered as a reply in that thread, with the thread in the prompt and no review posted", async () => {
-    const { dir, sha } = await repoAtHead();
-    const pr = prAt(dir, sha);
-    const own = thread({ replies: [{ id: 12, author: "bob", body: "shrike why is this wrong?" }] });
-    const answer = report("warn", findingOf("warn"), { summary: "Because the header counts.", threads: [{ fingerprint: own.fingerprint, state: "wrong" }] });
-    const { trace, backend, gh } = fakes({ ask: [answer, answer] }, pr, { threads: [own] });
-    const runs = await runJob(
-      { owner: "o", repo: "r", pr: 1, trigger: "comment", reviews: [], prompt: "why is this wrong?", replyTo: 12 },
-      { gh, backend, settings: settings({ shriken: false }), reviews, cwd: dir, log: () => {} },
-    );
-    expect(runs.map((r) => [r.review, r.status])).toEqual([["ask", "done"]]);
-    expect(trace.sessions[0]!.prompts[0]).toContain('in the thread at `f.txt:1` about "warn finding":\n\nwhy is this wrong?\n\nThe thread so far:\n- bob: shrike why is this wrong?');
-    expect(trace.sessions[0]!.prompts[0]).not.toContain("# Earlier runs");
-    expect(trace.replies).toEqual([{ commentId: 12, text: "Because the header counts.", closing: false }]);
-    expect(runs[0]!.posted).toEqual({ id: 12, url: "https://gh/c/12/reply" });
-    expect(trace.reviews).toEqual([]);
-    expect(trace.closed).toEqual([]);
-    expect(trace.statuses.at(-1)).toContain("### Open (1)\n- **[warning] warn finding** `f.txt:1` · slop-review [thread](https://gh/t/1)");
-    expect(trace.statuses.at(-1)).not.toContain("`new`");
-    expect(trace.statuses.at(-1)).toContain("<details><summary>ask said</summary>\n\nBecause the header counts.\n\n</details>");
   });
 
   test("retries once on invalid output, isolates failures, honours requested reviews, model and shriken off", async () => {
@@ -751,7 +719,7 @@ describe("runJob", () => {
     const { dir, sha } = await repoAtHead();
     const pr = prAt(dir, sha, 3);
     const { backend, gh } = fakes({ "code-review": [report("pass")], "slop-review": ["nope", "nope"], shriken }, pr);
-    const seen: [string, string, number][] = [];
+    const seen: [string, string, number | undefined][] = [];
     const logs: string[] = [];
     const runs = await runJob(
       { owner: "o", repo: "r", pr: 3, trigger: "pull_request", reviews: ["code-review", "slop-review", "nothing"] },
@@ -963,7 +931,7 @@ describe("run records", () => {
   const recorder = () => {
     const records: RunRecord[] = [];
     const stored: Record<string, Turn[]> = {};
-    const onRun = async (run: ReviewRun, pr: PullRequest, from: number) => {
+    const onRun = async (run: ReviewRun, pr: RunTarget, from: number) => {
       const record = structuredClone(runRecord(JOB, run, pr, undefined, from));
       records.push(record);
       record.transcript.forEach((turn, at) => ((stored[record.key!] ??= [])[record.from + at] = turn));
@@ -1582,4 +1550,160 @@ describe("capture", () => {
     expect(without.map((r) => r.review)).toEqual(["code-review", "shriken"]);
     expect(lines).toContain("[capture] skipped: this runner has no identity to publish the files with");
   }, 60_000);
+});
+
+describe("agent", () => {
+  const identity = { token: "tok", name: "shrike[bot]", email: "7+shrike[bot]@users.noreply.github.com" };
+  const chat = { id: "5f0c1d2e-3a4b-4c5d-8e6f-7a8b9c0d1e2f", key: "0f0c1d2e-3a4b-4c5d-8e6f-7a8b9c0d1e2f", sha: "c".repeat(40), branch: "main", model: "fake/chosen", history: [] };
+  const answer = (summary: string, json = "") => `\`\`\`markdown\n${summary}\n\`\`\`${json ? `\n\`\`\`json\n${json}\n\`\`\`` : ""}`;
+
+  async function origin(): Promise<{ origin: string; main: string; head: string; work: string }> {
+    const origin = await mkdtemp(join(tmpdir(), "agent-origin-"));
+    await git(origin, ["init", "-q", "-b", "main"]);
+    await writeFile(join(origin, "a.txt"), "one\n");
+    await git(origin, ["add", "-A"]);
+    await git(origin, ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "init"]);
+    const main = await git(origin, ["rev-parse", "HEAD"]);
+    await git(origin, ["checkout", "-q", "-b", "f"]);
+    await writeFile(join(origin, "a.txt"), "feature\n");
+    await git(origin, ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-am", "feature"]);
+    const head = await git(origin, ["rev-parse", "HEAD"]);
+    await git(origin, ["update-ref", "refs/pull/1/head", head]);
+    await git(origin, ["checkout", "-q", "main"]);
+    return { origin, main, head, work: join(await mkdtemp(join(tmpdir(), "agent-work-")), "repo") };
+  }
+
+  const deps = (gh: PullRequestClient, backend: Backend, work: string, remote: string, extra: Partial<Parameters<typeof runJob>[1]> = {}) => ({
+    gh,
+    backend,
+    settings: settings({ shriken: false }),
+    reviews,
+    cwd: work,
+    log: () => {},
+    autofix: { identity: async () => identity, remote },
+    ...extra,
+  });
+
+  test("a free form pull request comment runs the agent, which pushes what it changed and answers in a comment", async () => {
+    const at = await origin();
+    const pr = { ...prAt(at.origin, at.head), head: "f" };
+    const { trace, backend, gh } = fakes({ agent: [answer("Made the count configurable in [file:a.txt:1], see [pull:1].", '{"commit": "Make the count configurable"}')] }, pr, { onFix: (cwd) => writeFile(join(cwd, "a.txt"), "configurable\n") });
+    const runs = await runJob({ owner: "o", repo: "r", pr: 1, trigger: "comment", reviews: [], prompt: "make the count configurable" }, deps(gh, backend, at.work, at.origin));
+    expect(runs.map((run) => [run.review, run.status])).toEqual([["agent", "done"]]);
+    expect(trace.sessions.map((session) => session.write)).toEqual([true]);
+    expect(trace.sessions[0]!.prompts[0]).toContain("Pull request #1: T by a (f -> main). The checkout is at its head.");
+    expect(trace.sessions[0]!.prompts[0]).toContain("- #1 Open one by a (f -> main)");
+    expect(trace.sessions[0]!.prompts[0]).toContain("# The ask\nmake the count configurable");
+    const pushed = await git(at.origin, ["rev-parse", "refs/heads/f"]);
+    expect(pushed).not.toBe(at.head);
+    expect(await git(at.origin, ["log", "-1", "--format=%B", "f"])).toBe("Make the count configurable\n\nAsked in #1.");
+    expect(await git(at.work, ["rev-parse", "pull/1"])).toBe(at.head);
+    expect(runs[0]!.answer).toEqual({ summary: "Made the count configurable in [file:a.txt:1], see [pull:1].", actions: [], commit: pushed, branch: "f", pull: 1 });
+    expect(trace.comments).toEqual([{ number: 1, body: `Made the count configurable in [\`a.txt:1\`](https://github.com/o/r/blob/${pushed}/a.txt#L1), see #1.\n\nPushed ${pushed.slice(0, 7)} with these changes.` }]);
+    expect(trace.opened).toEqual([]);
+    expect(trace.checks).toEqual([]);
+    expect(trace.statuses).toEqual([]);
+  });
+
+  test("words that all name reviews still run those reviews, and agent is refused as a review name", async () => {
+    const { dir, sha } = await repoAtHead();
+    const pr = prAt(dir, sha);
+    const named = fakes({ cleanup: [report("pass")] }, pr);
+    const plain = await runJob({ owner: "o", repo: "r", pr: 1, trigger: "comment", reviews: ["cleanup"], prompt: "cleanup" }, { gh: named.gh, backend: named.backend, settings: settings({ shriken: false }), reviews, cwd: dir, log: () => {} });
+    expect(plain.map((run) => [run.review, run.status])).toEqual([["cleanup", "done"]]);
+    expect(named.trace.sessions[0]!.write).toBe(false);
+    const reserved = fakes({}, pr);
+    const refused = await runJob({ owner: "o", repo: "r", pr: 1, trigger: "comment", reviews: ["agent"] }, { gh: reserved.gh, backend: reserved.backend, settings: settings({ shriken: false }), reviews, cwd: dir, log: () => {} });
+    expect(refused.map((run) => [run.review, run.status, run.error])).toEqual([["agent", "error", "agent is what a comment or a chat asks for, not a review"]]);
+  });
+
+  test("a question pushes nothing, and a reply in a review thread is answered in that thread with the thread in the prompt", async () => {
+    const at = await origin();
+    const pr = { ...prAt(at.origin, at.head), head: "f" };
+    const own = thread({ replies: [{ id: 12, author: "bob", body: "shrike why is this wrong?" }] });
+    const { trace, backend, gh } = fakes({ agent: [answer("Because the header counts [file:f.txt:1].")] }, pr, { threads: [own] });
+    const runs = await runJob({ owner: "o", repo: "r", pr: 1, trigger: "comment", reviews: [], prompt: "why is this wrong?", replyTo: 12 }, deps(gh, backend, at.work, at.origin));
+    expect(runs[0]!.status).toBe("done");
+    expect(trace.sessions[0]!.prompts[0]).toContain('A reply in the review thread at `f.txt:1` about "warn finding". The thread so far:\n- bob: shrike why is this wrong?\n\nwhy is this wrong?');
+    expect(await git(at.origin, ["rev-parse", "refs/heads/f"])).toBe(at.head);
+    expect(runs[0]!.answer).toEqual({ summary: "Because the header counts [file:f.txt:1].", actions: [] });
+    expect(trace.replies).toEqual([{ commentId: 12, text: `Because the header counts [\`f.txt:1\`](https://github.com/o/r/blob/${at.head}/f.txt#L1).`, closing: false }]);
+    expect(runs[0]!.posted).toEqual({ id: 12, url: "https://gh/c/12/reply" });
+    expect(trace.comments).toEqual([]);
+  });
+
+  test("an issue comment works on the default branch and opens a pull request that closes the issue", async () => {
+    const at = await origin();
+    const { trace, backend, gh } = fakes({ agent: [answer("Fixed the redirect in [file:a.txt].", '{"commit": "Fix the login redirect"}')] }, prAt(at.origin, at.head), { onFix: (cwd) => writeFile(join(cwd, "a.txt"), "fixed\n") });
+    const runs = await runJob({ owner: "o", repo: "r", issue: 3, trigger: "comment", reviews: [], prompt: "fix it" }, deps(gh, backend, at.work, at.origin));
+    expect(runs[0]!.status).toBe("done");
+    expect(trace.sessions[0]!.prompts[0]).toContain("Issue #3: Login fails by bo. The checkout is at main.");
+    const branch = runs[0]!.answer!.branch!;
+    expect(branch).toMatch(/^shrike\/fix-the-login-redirect-[0-9a-f]{6}$/);
+    expect(await git(at.origin, ["rev-parse", `refs/heads/${branch}`])).toBe(runs[0]!.answer!.commit!);
+    expect(await git(at.origin, ["rev-parse", `refs/heads/${branch}~1`])).toBe(at.main);
+    expect(trace.opened).toEqual([{ head: branch, base: "main", title: "Fix the login redirect", body: expect.stringContaining("Closes #3") }]);
+    expect(runs[0]!.answer!.pull).toBe(9);
+    expect(trace.comments).toEqual([{ number: 3, body: expect.stringContaining("Opened #9 with these changes.") }]);
+  });
+
+  test("a chat reports under its key with no pull request and posts nothing on GitHub, and a failed setup still ends the run", async () => {
+    const at = await origin();
+    const { trace, backend, gh } = fakes({ agent: [answer("Two pull requests are open: [pull:1].", '{"actions": [{"kind": "settings", "label": "Turn on autofix", "patch": {"autofix": "ci"}}, {"kind": "settings", "label": "Bad", "patch": {"autofix": "never"}}]}')] }, prAt(at.origin, at.head));
+    const records: RunRecord[] = [];
+    const job = { owner: "o", repo: "r", trigger: "dispatch" as const, reviews: [], prompt: "what is open?", chat };
+    const report = async (run: ReviewRun, target: RunTarget, from: number) => void records.push(runRecord(job, run, target, undefined, from));
+    const runs = await runJob(job, deps(gh, backend, at.work, at.origin, { onRun: report }));
+    expect(trace.sessions[0]!.model).toBe("fake/chosen");
+    expect(records.at(0)).toMatchObject({ key: chat.key, status: "running", review: "agent", sha: chat.sha });
+    expect(records.at(-1)).toMatchObject({ key: chat.key, status: "done", sha: at.main, report: { summary: "Two pull requests are open: [pull:1].", actions: [{ kind: "settings", label: "Turn on autofix", patch: { autofix: "ci" } }] } });
+    expect(records.every((record) => record.pr === undefined)).toBe(true);
+    expect(runs[0]!.answer).not.toHaveProperty("commit");
+    expect([trace.comments, trace.opened, trace.replies]).toEqual([[], [], []]);
+
+    const broken = fakes({}, prAt(at.origin, at.head), { branchFails: true });
+    const failed: RunRecord[] = [];
+    const [run] = await runJob(job, deps(broken.gh, broken.backend, at.work, at.origin, { onRun: async (own, target) => void failed.push(runRecord(job, own, target)) }));
+    expect([run!.status, run!.error]).toEqual(["error", "branch main not found"]);
+    expect(failed.map((record) => record.sha)).toEqual(failed.map(() => chat.sha));
+    expect(failed.at(-1)).toMatchObject({ key: chat.key, status: "error" });
+    expect(broken.trace.sessions).toEqual([]);
+    expect(broken.trace.comments).toEqual([]);
+  });
+
+  test("a chat streams its tool calls with their output, and an abort reports it cancelled once and posts nothing", async () => {
+    const at = await origin();
+    const abort = new AbortController();
+    const onPrompt = async (_text: string, tool: (call: ToolCall) => void) => {
+      tool({ id: "t1", kind: "execute", title: "git log" });
+      tool({ id: "t1", output: "abc Add line" });
+      setTimeout(() => abort.abort(), 10);
+    };
+    const { trace, backend, gh } = fakes({ agent: [answer("Too late.", '{"commit": "Change it"}')] }, prAt(at.origin, at.head), { promptDelayMs: 80, onPrompt, onFix: (cwd) => writeFile(join(cwd, "a.txt"), "late\n") });
+    const records: RunRecord[] = [];
+    const job = { owner: "o", repo: "r", trigger: "dispatch" as const, reviews: [], prompt: "what changed?", chat };
+    const [run] = await runJob(job, deps(gh, backend, at.work, at.origin, { signal: abort.signal, onRun: async (own, target, from) => void records.push(runRecord(job, own, target, undefined, from)) }));
+    expect(run!.status).toBe("cancelled");
+    while (!trace.sessions[0]!.closed) await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(records.filter((record) => record.status === "cancelled")).toHaveLength(1);
+    expect(records.at(-1)).toMatchObject({ key: chat.key, status: "cancelled", sha: at.main });
+    expect(records.at(-1)!.transcript.find((turn) => turn.role === "tool")).toEqual({ role: "tool", text: "tool execute git log", output: "abc Add line" });
+    expect(run!.answer).toBeUndefined();
+    expect([trace.comments, trace.opened, trace.replies]).toEqual([[], [], []]);
+    expect(await git(at.origin, ["for-each-ref", "--format=%(refname)", "refs/heads/shrike"])).toBe("");
+  });
+
+  test("changes without a push identity fail the run and the error is posted on the pull request", async () => {
+    const at = await origin();
+    const pr = { ...prAt(at.origin, at.head), head: "f" };
+    const { trace, backend, gh } = fakes({ agent: [answer("Changed [file:a.txt].")] }, pr, { onFix: (cwd) => writeFile(join(cwd, "a.txt"), "changed\n") });
+    const job = { owner: "o", repo: "r", pr: 1, trigger: "comment" as const, reviews: [], prompt: "change it" };
+    const records: RunRecord[] = [];
+    const [run] = await runJob(job, { ...deps(gh, backend, at.work, at.origin), autofix: undefined, onRun: async (own, target, from) => void records.push(runRecord(job, own, target, undefined, from)) });
+    expect(run!.status).toBe("error");
+    expect(records.map((record) => [record.pr, record.sha])).toEqual(records.map(() => [1, at.head]));
+    expect(records.at(-1)!.status).toBe("error");
+    expect(trace.comments).toEqual([{ number: 1, body: "Shrike could not finish this: the agent changed files but this runner has no identity to push them with" }]);
+    expect(await git(at.origin, ["rev-parse", "refs/heads/f"])).toBe(at.head);
+  });
 });

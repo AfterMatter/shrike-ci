@@ -1,5 +1,5 @@
-// GitHub side of a run: load PR context and history, post the one review
-// and its threads, keep the card and checks, read other checks, publish media.
+// GitHub side of a run: load PR, issue and repository context, post reviews,
+// threads and replies, keep the card and checks, open pulls, publish media.
 import { Octokit } from "octokit";
 import { commentableLines, renderPatch } from "./diff";
 import { CHECK_ACTIONS, type Job } from "./job";
@@ -30,6 +30,28 @@ export interface PullRequest {
   private: boolean;
   files: PullRequestFile[];
   diff: string;
+}
+
+export interface OpenPull {
+  number: number;
+  title: string;
+  author: string;
+  head: string;
+  base: string;
+  draft: boolean;
+}
+
+export interface Issue {
+  number: number;
+  title: string;
+  author: string;
+  body: string;
+  comments: Comment[];
+}
+
+export interface Repository {
+  cloneUrl: string;
+  defaultBranch: string;
 }
 
 export interface PushIdentity {
@@ -216,7 +238,7 @@ export class PullRequestClient {
     private readonly withToken: (token: string) => Octokit = (auth) => new Octokit({ auth }),
   ) {}
 
-  async load(job: Job): Promise<PullRequest> {
+  async load(job: Pick<Job, "owner" | "repo"> & { pr: number }): Promise<PullRequest> {
     const { owner, repo, pr: pull_number } = job;
     const { data } = await this.octokit.rest.pulls.get({ owner, repo, pull_number });
     const changed = await this.octokit.paginate(this.octokit.rest.pulls.listFiles, { owner, repo, pull_number, per_page: 100 });
@@ -359,6 +381,42 @@ export class PullRequestClient {
     if (head) await octokit.rest.git.updateRef({ owner, repo, ref, sha: commit.sha });
     else await octokit.rest.git.createRef({ owner, repo, ref: `refs/${ref}`, sha: commit.sha });
     return commit.sha;
+  }
+
+  async repository(owner: string, repo: string): Promise<Repository> {
+    const { data } = await this.octokit.rest.repos.get({ owner, repo });
+    return { cloneUrl: data.clone_url, defaultBranch: data.default_branch };
+  }
+
+  async branchSha(owner: string, repo: string, branch: string): Promise<string> {
+    return (await this.octokit.rest.repos.getBranch({ owner, repo, branch })).data.commit.sha;
+  }
+
+  async openPulls(owner: string, repo: string): Promise<OpenPull[]> {
+    const { data } = await this.octokit.rest.pulls.list({ owner, repo, state: "open", sort: "updated", direction: "desc", per_page: 30 });
+    return data.map((pull) => ({ number: pull.number, title: pull.title, author: pull.user?.login ?? "unknown", head: pull.head.ref, base: pull.base.ref, draft: pull.draft ?? false }));
+  }
+
+  async issue(owner: string, repo: string, number: number): Promise<Issue> {
+    const [{ data }, comments] = await Promise.all([
+      this.octokit.rest.issues.get({ owner, repo, issue_number: number }),
+      this.octokit.paginate(this.octokit.rest.issues.listComments, { owner, repo, issue_number: number, per_page: 100 }),
+    ]);
+    return {
+      number,
+      title: data.title,
+      author: data.user?.login ?? "unknown",
+      body: (data.body ?? "").slice(0, 8000),
+      comments: comments.slice(-30).map((c) => ({ author: c.user?.login ?? "unknown", date: c.created_at, body: (c.body ?? "").slice(0, 2000) })),
+    };
+  }
+
+  async comment(owner: string, repo: string, number: number, body: string): Promise<string> {
+    return (await this.octokit.rest.issues.createComment({ owner, repo, issue_number: number, body })).data.html_url;
+  }
+
+  async openPull(owner: string, repo: string, pull: { head: string; base: string; title: string; body: string }): Promise<number> {
+    return (await this.octokit.rest.pulls.create({ owner, repo, ...pull })).data.number;
   }
 
   async history(pr: PullRequest): Promise<PullRequestHistory> {

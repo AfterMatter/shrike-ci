@@ -54,10 +54,9 @@ describe("jobFromEvent", () => {
     expect(jobFromEvent("pull_request", { action: "labeled", repository, pull_request: { number: 1 } })).toBeNull();
   });
 
-  test("issue comments trigger only on pull requests that mention the bot", () => {
+  test("issue comments trigger only when they mention the bot", () => {
     const comment = { body: "shrike slop-review", author_association: "COLLABORATOR" };
     expect(jobFromEvent("issue_comment", { action: "created", repository, issue: { number: 4, pull_request: {} }, comment })).toMatchObject({ pr: 4, trigger: "comment", reviews: ["slop-review"] });
-    expect(jobFromEvent("issue_comment", { action: "created", repository, issue: { number: 4 }, comment })).toBeNull();
     expect(jobFromEvent("issue_comment", { action: "edited", repository, issue: { number: 4, pull_request: {} }, comment })).toBeNull();
     expect(jobFromEvent("issue_comment", { action: "created", repository, issue: { number: 4, pull_request: {} }, comment: { body: "nice" } })).toBeNull();
     expect(jobFromEvent("issue_comment", { action: "created", repository, issue: { number: 4, pull_request: {} }, comment: { body: "shrike", author_association: "NONE" } })).toBeNull();
@@ -86,6 +85,34 @@ describe("jobFromEvent", () => {
     expect(jobFromEvent("issue_comment", { action: "created", repository, issue: { number: 4, pull_request: {} }, comment: { body: "shrike autofix", author_association: "NONE" } })).toBeNull();
     expect(jobFromEvent("repository_dispatch", { repository, client_payload: { pr: 3, trigger: "comment", reviews: [], autofix: "ci" } })).toMatchObject({ autofix: "ci" });
     expect(() => jobFromEvent("repository_dispatch", { repository, client_payload: { pr: 3, trigger: "comment", reviews: [], autofix: "always" } })).toThrow();
+  });
+
+  test("a comment on a plain issue is an agent task on that issue", () => {
+    const at = (body: string, author_association = "MEMBER") => jobFromEvent("issue_comment", { action: "created", repository, issue: { number: 4 }, comment: { body, author_association } });
+    expect(at("shrike fix the login redirect")).toEqual({ owner: "forloopcodes", repo: "shrike", repositoryId: 501, installationId: undefined, issue: 4, trigger: "comment", reviews: [], prompt: "fix the login redirect" });
+    expect(at("shrike slop-review")).toMatchObject({ issue: 4, reviews: [], prompt: "slop-review" });
+    expect(at("shrike")).toMatchObject({ issue: 4, prompt: "Work on this issue." });
+    expect(at("shrike")).not.toHaveProperty("pr");
+    expect(at("shrike fix it", "NONE")).toBeNull();
+    expect(at("please fix")).toBeNull();
+  });
+
+  test("a chat payload carries the branch, model and history, and a job needs a pull, an issue or a chat", () => {
+    const chat = { id: "5f0c1d2e-3a4b-4c5d-8e6f-7a8b9c0d1e2f", key: "0f0c1d2e-3a4b-4c5d-8e6f-7a8b9c0d1e2f", sha: "c".repeat(40), branch: "main", model: "opencode/big-pickle" };
+    expect(jobFromEvent("repository_dispatch", { repository, client_payload: { trigger: "dispatch", prompt: "what is open?", chat } })).toEqual({
+      owner: "forloopcodes",
+      repo: "shrike",
+      repositoryId: 501,
+      installationId: undefined,
+      trigger: "dispatch",
+      reviews: [],
+      prompt: "what is open?",
+      chat: { ...chat, history: [] },
+    });
+    expect(() => jobFromEvent("repository_dispatch", { repository, client_payload: { trigger: "dispatch", prompt: "what is open?" } })).toThrow(/a pull request, an issue or a chat/);
+    expect(() => jobFromEvent("repository_dispatch", { repository, client_payload: { trigger: "dispatch", prompt: "x", chat: { ...chat, id: "nope" } } })).toThrow();
+    expect(() => jobFromEvent("repository_dispatch", { repository, client_payload: { trigger: "dispatch", prompt: "x", chat: { ...chat, sha: "main" } } })).toThrow();
+    expect(() => jobFromEvent("repository_dispatch", { repository, client_payload: { trigger: "dispatch", prompt: "x", chat: { ...chat, history: Array.from({ length: 21 }, () => ({ ask: "a", reply: "b" })) } } })).toThrow();
   });
 
   test("review comments use the pull request number", () => {

@@ -92,14 +92,24 @@ export const commitTitle = (summary: string): string => summary.split("\n", 1)[0
 
 const hideToken = (error: unknown, token: string): Error => new Error((error instanceof Error ? error.message : String(error)).split(token).join("***"));
 
-export async function commitAndPush(cwd: string, pr: PullRequest, plan: Plan, summary: string, identity: PushIdentity, remote?: string): Promise<string | null> {
+export interface PushTarget {
+  owner: string;
+  repo: string;
+  branch: string;
+}
+
+export const autofixMessage = (summary: string, plan: Plan): string[] => {
+  const body = summary.split("\n").slice(1).join("\n").trim();
+  return [`Shrike autofix: ${commitTitle(summary)}`, ...(body ? [body] : []), `${TRAILER}: ${[plan.mode, ...plan.named].join(" ")}`];
+};
+
+export async function commitAndPush(cwd: string, target: PushTarget, message: string[], identity: PushIdentity, remote?: string): Promise<string | null> {
   await git(cwd, ["checkout", "--", PROTECTED]).catch(() => "");
   await git(cwd, ["clean", "-fdq", "--", PROTECTED]).catch(() => "");
   if (!(await git(cwd, ["status", "--porcelain"]))) return null;
   await git(cwd, ["add", "-A"]);
-  const body = summary.split("\n").slice(1).join("\n").trim();
-  await git(cwd, ["-c", `user.name=${identity.name}`, "-c", `user.email=${identity.email}`, "commit", "-q", "-m", `Shrike autofix: ${commitTitle(summary)}`, ...(body ? ["-m", body] : []), "-m", `${TRAILER}: ${[plan.mode, ...plan.named].join(" ")}`]);
-  await git(cwd, ["push", "--quiet", remote ?? `https://x-access-token:${identity.token}@github.com/${pr.owner}/${pr.repo}.git`, `HEAD:refs/heads/${pr.head}`]).catch((error) => {
+  await git(cwd, ["-c", `user.name=${identity.name}`, "-c", `user.email=${identity.email}`, "commit", "-q", ...message.flatMap((paragraph) => ["-m", paragraph])]);
+  await git(cwd, ["push", "--quiet", remote ?? `https://x-access-token:${identity.token}@github.com/${target.owner}/${target.repo}.git`, `HEAD:refs/heads/${target.branch}`]).catch((error) => {
     throw hideToken(error, identity.token);
   });
   return git(cwd, ["rev-parse", "HEAD"]);

@@ -1,12 +1,22 @@
 // Job model shared by webhook, action and runner. Maps GitHub events, comments
-// starting with shrike and check actions to reviews, a prompt or an autofix.
+// starting with shrike and check actions to reviews, an agent task or autofix.
 import { z } from "zod";
+
+export const chatSchema = z.object({
+  id: z.string().uuid(),
+  key: z.string().uuid(),
+  sha: z.string().regex(/^[0-9a-f]{40}$/),
+  branch: z.string().min(1),
+  model: z.string().min(1).optional(),
+  history: z.array(z.object({ ask: z.string(), reply: z.string() })).max(20).default([]),
+});
 
 export const jobSchema = z.object({
   owner: z.string().min(1),
   repo: z.string().min(1),
   repositoryId: z.number().int().optional(),
-  pr: z.number().int().positive(),
+  pr: z.number().int().positive().optional(),
+  issue: z.number().int().positive().optional(),
   trigger: z.enum(["pull_request", "comment", "dispatch", "action"]),
   reviews: z.array(z.string().regex(/^[a-z0-9-]+$/)).default([]),
   autofix: z.enum(["ci", "all"]).optional(),
@@ -14,9 +24,12 @@ export const jobSchema = z.object({
   prompt: z.string().min(1).optional(),
   replyTo: z.number().int().positive().optional(),
   installationId: z.number().int().optional(),
-});
+  chat: chatSchema.optional(),
+}).refine((job) => job.pr !== undefined || job.issue !== undefined || job.chat !== undefined, { message: "a job needs a pull request, an issue or a chat" });
 
 export type Job = z.infer<typeof jobSchema>;
+
+export type Chat = z.infer<typeof chatSchema>;
 
 export interface Trigger {
   words: string[];
@@ -62,8 +75,10 @@ export function jobFromEvent(name: string, payload: unknown): Job | null {
   }
   if ((name === "issue_comment" || name === "pull_request_review_comment") && event.action === "created") {
     const pr = name === "issue_comment" ? (event.issue?.pull_request ? event.issue.number : undefined) : event.pull_request?.number;
+    const issue = name === "issue_comment" && !event.issue?.pull_request ? event.issue?.number : undefined;
     const trigger = parseTrigger(event.comment?.body);
-    if (pr === undefined || trigger === null || !TRUSTED.has(event.comment?.author_association ?? "")) return null;
+    if ((pr === undefined && issue === undefined) || trigger === null || !TRUSTED.has(event.comment?.author_association ?? "")) return null;
+    if (issue !== undefined) return { ...repo, issue, trigger: "comment", reviews: [], prompt: trigger.text || "Work on this issue." };
     const { words, text } = trigger;
     const mode = words[1] === "ci" || words[1] === "all" ? words[1] : undefined;
     const fix = words[0] === "autofix" ? words.slice(mode ? 2 : 1) : [];

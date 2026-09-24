@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { attemptsAtHead, commitAndPush, commitTitle, fixes, headMessages, planOf, problemsOf, reviewsGreen, tailOf, trailerOf, waitForChecks } from "../src/autofix";
+import { attemptsAtHead, autofixMessage, commitAndPush, commitTitle, fixes, headMessages, planOf, problemsOf, reviewsGreen, tailOf, trailerOf, waitForChecks } from "../src/autofix";
 import { git } from "../src/checkout";
 import type { CheckRun, PullRequest, PullRequestClient } from "../src/github";
 import type { ReviewRun } from "../src/runner";
@@ -10,6 +10,7 @@ import { resolveSettings } from "../src/settings";
 
 const job = { owner: "o", repo: "r", pr: 1, trigger: "comment" as const, reviews: [] };
 const pr: PullRequest = { owner: "o", repo: "r", number: 1, title: "T", body: null, author: "a", base: "main", head: "feature", headSha: "abc", baseSha: "base", cloneUrl: "c", fork: false, private: false, files: [], diff: "" };
+const target = { owner: "o", repo: "r", branch: "feature" };
 const check = (name: string, status: CheckRun["status"], conclusion: string | null, jobId: number | null = null): CheckRun => ({ name, status, conclusion, url: null, jobId });
 const run = (review: string, verdict: "pass" | "warn" | "fail", findings = 0): ReviewRun => ({
   review,
@@ -153,7 +154,7 @@ describe("commit and push", () => {
     const { work, bare } = await repos();
     await writeFile(join(work, "a.txt"), "two\n");
     await writeFile(join(work, "new.txt"), "n\n");
-    const sha = await commitAndPush(work, pr, { mode: "ci", named: [] }, "Fix the failing test\n\nThe assertion expected two.", identity, bare);
+    const sha = await commitAndPush(work, target, autofixMessage("Fix the failing test\n\nThe assertion expected two.", { mode: "ci", named: [] }), identity, bare);
     expect(sha).toBe(await git(work, ["rev-parse", "HEAD"]));
     expect(await git(bare, ["rev-parse", "refs/heads/feature"])).toBe(sha!);
     const messages = await headMessages(work);
@@ -167,28 +168,39 @@ describe("commit and push", () => {
   test("named reviews ride in the trailer and read back as the same plan", async () => {
     const { work, bare } = await repos();
     await writeFile(join(work, "a.txt"), "two\n");
-    await commitAndPush(work, pr, { mode: "all", named: ["code-review", "slop-review"] }, "Fix", identity, bare);
+    await commitAndPush(work, target, autofixMessage("Fix", { mode: "all", named: ["code-review", "slop-review"] }), identity, bare);
     const [head] = await headMessages(work);
     expect(head!.split("\n").at(-1)).toBe("Shrike-Autofix: all code-review slop-review");
     expect(trailerOf(head!)).toEqual({ mode: "all", named: ["code-review", "slop-review"] });
   });
 
+  test("an agent commit creates its branch and carries no autofix trailer", async () => {
+    const { work, bare } = await repos();
+    await writeFile(join(work, "a.txt"), "agent\n");
+    const sha = await commitAndPush(work, { ...target, branch: "shrike/retry-5f0c1d" }, ["Retry the API", "Asked on the Shrike website."], identity, bare);
+    expect(await git(bare, ["rev-parse", "refs/heads/shrike/retry-5f0c1d"])).toBe(sha!);
+    const messages = await headMessages(work);
+    expect(messages[0]).toBe("Retry the API\n\nAsked on the Shrike website.");
+    expect(trailerOf(messages[0]!)).toBeNull();
+    expect(attemptsAtHead(messages)).toBe(0);
+  });
+
   test("changes under the workflows folder are thrown away, and nothing else means no commit", async () => {
     const { work, bare } = await repos();
-    expect(await commitAndPush(work, pr, { mode: "all", named: [] }, "Nothing", identity, bare)).toBeNull();
+    expect(await commitAndPush(work, target, autofixMessage("Nothing", { mode: "all", named: [] }), identity, bare)).toBeNull();
     await Bun.write(join(work, ".github", "workflows", "ci.yml"), "on: push\n");
-    expect(await commitAndPush(work, pr, { mode: "all", named: [] }, "Nothing", identity, bare)).toBeNull();
+    expect(await commitAndPush(work, target, autofixMessage("Nothing", { mode: "all", named: [] }), identity, bare)).toBeNull();
     expect(await git(work, ["status", "--porcelain"])).toBe("");
     await Bun.write(join(work, ".github", "workflows", "ci.yml"), "on: push\n");
     await writeFile(join(work, "a.txt"), "three\n");
-    expect(await commitAndPush(work, pr, { mode: "all", named: [] }, "Real fix", identity, bare)).not.toBeNull();
+    expect(await commitAndPush(work, target, autofixMessage("Real fix", { mode: "all", named: [] }), identity, bare)).not.toBeNull();
     expect(await git(work, ["show", "--stat", "--format=", "HEAD"])).not.toContain("workflows");
   });
 
   test("a failed push never leaks the token", async () => {
     const { work } = await repos();
     await writeFile(join(work, "a.txt"), "two\n");
-    const failure = await commitAndPush(work, pr, { mode: "ci", named: [] }, "Fix", identity, join(work, "missing-secret-token")).then(() => null, (error: Error) => error.message);
+    const failure = await commitAndPush(work, target, autofixMessage("Fix", { mode: "ci", named: [] }), identity, join(work, "missing-secret-token")).then(() => null, (error: Error) => error.message);
     expect(failure).toMatch(/git push failed/);
     expect(failure).toContain("missing-***");
     expect(failure).not.toContain("secret-token");
