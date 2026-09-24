@@ -204,7 +204,7 @@ ${clipDiff(pr.diff)}
 
 # Output contract
 Write the summary a reviewer reads before deciding: two or three paragraphs of plain sentences, at most 90 words each, that tell what the pull request does, what matters in what the reviews found, and what to decide. The last paragraph takes a position in plain words, merge, hold the merge, or do not merge, names the one thing that decides it, and says what would change your mind. No headings, no lists, no tables, no links, no placeholder tokens such as [start] or [end]: the text begins with its first sentence.
-Between the paragraphs, show what the reviewer must see with at most three blocks in total, each on its own lines right after the sentence that introduces it, never after a line of only tokens and never after the last paragraph, so the document starts and ends with a paragraph. Lay it out in this order: the paragraph on what the pull request does, then the block it introduces if any; the paragraph on what the reviews found, then the block it introduces if any; last, the paragraph that takes a position, with nothing after it. The blocks:
+Between the paragraphs, show what the reviewer must see with at most three blocks in total, each on its own lines right after the sentence that introduces it, never after a line of only tokens and never after the last paragraph, so the document starts and ends with a paragraph. Lay it out in this order: the paragraph on what the pull request does, then the block it introduces if any; the paragraph on what the reviews found, then the block it introduces if any; last, the paragraph that takes a position, with nothing after it. Never quote a line that starts with three backticks inside a block, it would end the block early. The blocks:
 - a \`\`\`diff block quoting at most 15 lines of the diff above that matter most, right after a sentence naming that file with a [file:<path>:<line>] token
 - a \`\`\`suggestion block copied from a finding, right after a sentence with that finding's token
 - an image as ![alt](url) with a url from the lists above, an image of the description or a before and after screenshot pair; never any other url
@@ -222,8 +222,8 @@ Rules:
 - Answer with the document inside one \`\`\`\`markdown fenced block of four backticks, so the \`\`\` blocks inside it stay whole, then the \`\`\`json block, and nothing after it.`;
 }
 
-export function buildAutofixPrompt(pr: PullRequest, mode: AutofixMode, problems: Problems): string {
-  return `You are Shrike, fixing pull request #${pr.number} of ${pr.owner}/${pr.repo} (${pr.head} -> ${pr.base}) so that ${mode === "ci" ? "the CI" : "the Shrike reviews and the CI"} turn green.
+export function buildAutofixPrompt(pr: PullRequest, problems: Problems): string {
+  return `You are Shrike, fixing pull request #${pr.number} of ${pr.owner}/${pr.repo} (${pr.head} -> ${pr.base}) so that ${problems.findings.length ? `the ${problems.findings.map((run) => run.review).join(", ")} findings and the CI` : "the CI"} turn green.
 
 The repository is checked out at the pull request head in your working directory. You may edit files and run commands. Make the smallest change that removes each cause below without changing what the pull request sets out to do. Never edit anything under .github/workflows, never skip, disable, delete or weaken a test or a check to make it pass, never commit or push: the runner commits your working tree. When the repository has a command that reproduces a failure, run it before and after your change.
 

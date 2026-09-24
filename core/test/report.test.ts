@@ -99,6 +99,8 @@ describe("checkShriken", () => {
     expect(() => checkShriken("Does a thing.\n\n[file:a.ts:7]\n```diff\n+x\n```\n\nMerge it.")).toThrow("only reference tokens");
     expect(() => checkShriken("Does a thing:\n\n```diff\n+x\n```\n\n```suggestion\ny\n```\n\nMerge it.")).toThrow("right after the sentence");
     expect(() => checkShriken("Does a thing:\n\n```diff\n+x\n```\n```\n\nMerge it.")).toThrow("never closed");
+    expect(() => checkShriken("Does a thing:\n\n```diff\n ```\n+x\n```\n\nMerge it.")).toThrow("never closed");
+    expect(() => checkShriken("Does a thing:\n\n```suggestion\n```js inside\n```\n\nMerge it.")).not.toThrow();
   });
 });
 

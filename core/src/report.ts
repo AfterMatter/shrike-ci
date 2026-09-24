@@ -115,18 +115,24 @@ export function parseShriken(text: string): string {
 
 export function checkShriken(document: string): void {
   const kinds: ("prose" | "label" | "code" | "image")[] = [];
+  const lines = document.split("\n").map((line) => line.trim());
   let inside = false;
   let paragraph = "";
   const flush = () => {
-    const text = paragraph.trim();
-    if (text) kinds.push(/^!\[[^\]]*\]\([^)]*\)$/.test(text) ? "image" : /\p{L}/u.test(text.replace(REFERENCE, "")) ? "prose" : "label");
+    if (paragraph) kinds.push(/\p{L}/u.test(paragraph.replace(REFERENCE, "")) ? "prose" : "label");
     paragraph = "";
   };
-  for (const line of document.split("\n")) {
-    if (line.trimStart().startsWith("```")) {
-      if (!inside) (flush(), kinds.push("code"));
-      inside = !inside;
-    } else if (!inside) line.trim() ? (paragraph += `${line}\n`) : flush();
+  for (let at = 0; at < lines.length && !inside; at++) {
+    const line = lines[at]!;
+    if (/^```\S*$/.test(line)) {
+      flush();
+      kinds.push("code");
+      const close = lines.indexOf("```", at + 1);
+      inside = close < 0;
+      at = close;
+    } else if (/^!\[[^\]]*\]\(\S+\)$/.test(line)) (flush(), kinds.push("image"));
+    else if (line) paragraph += `${line} `;
+    else flush();
   }
   flush();
   const prose = kinds.filter((kind) => kind === "prose").length;
