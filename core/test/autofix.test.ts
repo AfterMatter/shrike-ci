@@ -31,8 +31,9 @@ describe("plan", () => {
   });
 
   test("a comment names its reviews only in all mode", () => {
-    expect(planOf({ ...job, autofix: "all", reviews: ["code-review"] }, resolveSettings({}), "Shrike-Autofix: all slop-review")).toEqual({ mode: "all", named: ["code-review"] });
-    expect(planOf({ ...job, autofix: "ci", reviews: ["code-review"] }, resolveSettings({}), "Human commit")).toEqual({ mode: "ci", named: [] });
+    expect(planOf({ ...job, autofix: "all", fix: ["code-review"] }, resolveSettings({}), "Shrike-Autofix: all slop-review")).toEqual({ mode: "all", named: ["code-review"] });
+    expect(planOf({ ...job, autofix: "ci", fix: ["code-review"] }, resolveSettings({}), "Human commit")).toEqual({ mode: "ci", named: [] });
+    expect(planOf({ ...job, autofix: "all", reviews: ["code-review"] }, resolveSettings({ autofixReviews: ["slop-review"] }), "Human commit")).toEqual({ mode: "all", named: [] });
   });
 
   test("a fix action names its review while every review runs", () => {

@@ -46,7 +46,7 @@ export const trailerOf = (message: string): Plan | null => {
 };
 
 export const planOf = (job: Job, settings: Settings, headMessage: string): Plan | null =>
-  job.autofix ? { mode: job.autofix, named: job.autofix === "all" ? job.fix ?? job.reviews : [] } : trailerOf(headMessage) ?? (settings.autofix === "off" ? null : { mode: settings.autofix, named: [] });
+  job.autofix ? { mode: job.autofix, named: job.autofix === "all" ? job.fix ?? [] : [] } : trailerOf(headMessage) ?? (settings.autofix === "off" ? null : { mode: settings.autofix, named: [] });
 
 export const fixes = (plan: Plan, settings: Settings) => (review: string): boolean =>
   plan.mode === "all" && (plan.named.length ? plan.named.includes(review) : settings.autofixReviews?.includes(review) ?? true);

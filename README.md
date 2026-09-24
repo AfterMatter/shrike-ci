@@ -59,7 +59,7 @@ jobs:
 | Comment `shrike` on a PR | runs the configured reviews |
 | Comment `shrike security-review cleanup` | runs only those reviews, in that order |
 | Comment `shrike autofix` or `shrike autofix ci` | runs the configured reviews, then one autofix attempt in `all` or `ci` mode that keeps going on the next pushes until green or the limit |
-| Comment `shrike autofix code-review` | runs only that review, then fixes its findings and the CI, whatever `autofixReviews` lists |
+| Comment `shrike autofix code-review` | runs the configured reviews, then fixes only code-review's findings and the CI, whatever `autofixReviews` lists, like the Fix action of its check |
 | Comment `shrike <anything else>` | runs one `ask` review that does what the comment says, reported as the `shrike/ask` check |
 | Reply `shrike <question>` inside a review thread | runs the `ask` review with the thread as context and posts its answer as a reply in that thread |
 | Fix, Re-run or Ask on a `shrike/<review>` check | the Shrike GitHub App dispatches the autofix of that review, that review, or an ask that explains its findings |

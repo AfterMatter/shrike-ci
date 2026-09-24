@@ -1133,7 +1133,7 @@ describe("autofix", () => {
     const { dir, sha, bare } = await withRemote();
     const listed = settings({ reviews: ["code-review", "slop-review"], shriken: false, autofix: "all", autofixReviews: ["code-review", "slop-review"] });
     const first = fakes({ "code-review": [report("warn", [finding]), report("warn", [finding])], autofix: fixed }, prAt(dir, sha), { checks: [[green()]], onFix: (cwd) => writeFile(join(cwd, "a.txt"), "two\n") });
-    const runs = await runJob({ owner: "o", repo: "r", pr: 1, trigger: "action", reviews: ["code-review"], autofix: "all" }, { gh: first.gh, backend: first.backend, settings: listed, reviews, cwd: dir, log: () => {}, autofix: autofix(bare) });
+    const runs = await runJob({ owner: "o", repo: "r", pr: 1, trigger: "action", reviews: ["code-review"], autofix: "all", fix: ["code-review"] }, { gh: first.gh, backend: first.backend, settings: listed, reviews, cwd: dir, log: () => {}, autofix: autofix(bare) });
     expect(runs.map((r) => [r.review, r.report?.verdict])).toEqual([
       ["code-review", "warn"],
       ["autofix", "pass"],
