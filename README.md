@@ -1,12 +1,11 @@
 # Shrike CI
 
-Shrike is to PRs as Linear is to Issues. This repository is the open source runner: the review engine and the GitHub Action that runs it inside your own CI. Which reviews run, their instructions, the model, the session mode and whether Shriken writes the summary are configured on the Shrike website and fetched at run time, so the workflow file carries no settings.
+Shrike is to PRs as Linear is to Issues. This repository is the runner: the review engine and the GitHub Action that runs it inside your own CI. Which reviews run, their instructions, the model, the session mode and whether Shriken writes the summary are configured on the Shrike website and fetched at run time, so the workflow file carries no settings.
 
 ## Add Shrike to a repository
 
-1. Sign in on the Shrike website with GitHub and open the repository. The page shows the API URL and lets you pick the reviews.
-2. Add a repository variable `SHRIKE_API_URL` with that URL.
-3. Create `.github/workflows/shrike.yml`:
+1. Sign in on the Shrike website with GitHub, add the repository and pick the reviews.
+2. Commit the workflow the website shows as `.github/workflows/shrike.yml`. It already carries the API URL, so the repository needs no variable or secret:
 
 ```yaml
 name: Shrike
@@ -28,10 +27,10 @@ jobs:
       contents: read
       id-token: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: AfterMatter/shrike-ci/action@main
         with:
-          api_url: ${{ vars.SHRIKE_API_URL }}
+          api_url: https://shriken.vercel.app
 ```
 
 `id-token: write` lets the job mint a GitHub OpenID Connect token. The Action sends it to the API, which verifies it against GitHub's public keys and answers with the settings and review instructions of exactly that repository. No secret is stored in the repository. The API then mints an installation token of the Shrike GitHub App for that repository, refreshed before it expires, and everything the run posts, the reviews, the checks, the comments and the media branch, carries the App's name. Without the App installed on the repository the Action falls back to the job token, which then needs `pull-requests: write`, `checks: write` and `issues: write` in the workflow and posts as `github-actions`. Free runs use OpenCode with its free `opencode/big-pickle` model. On a Shrike plan the repository can pick Shriker Pro on the website; the Action then leases a key for that one job from the API, masks it in the log and hands it only to the pi agent, which reaches the model through the Shrike API, and releases it when the job ends. The key works only for Shriker Pro, only until the job ends and only while the account has credits. No model key is ever stored in the repository. Out of credits, the job falls back to the free model. The plan also decides which reviews run and whether autofix does.
@@ -98,3 +97,7 @@ bun test
 ```
 
 The `acp` backend needs the OpenCode CLI on `PATH` (`bun add -g opencode-ai`); the `pi` backend installs `pi-acp` and `@earendil-works/pi-coding-agent` on first use when they are missing.
+
+## License
+
+Proprietary. Copyright (c) 2026 AfterMatter, all rights reserved. The code is published only so GitHub can run the action in your workflows; it is not open source, and copying, modifying or redistributing it is not permitted. Use is governed by the [Shrike License](https://shriken.vercel.app/#/landing/license) and the [Terms of Service](https://shriken.vercel.app/#/landing/terms). Bundled open source packages keep their own licenses.
