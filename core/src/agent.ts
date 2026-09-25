@@ -9,13 +9,17 @@ import { ensureCheckout, git } from "./checkout";
 import type { Issue, OpenPull, PullRequest } from "./github";
 import type { Ask, Job } from "./job";
 import { ask, LIVE, wires } from "./live";
-import { freeModel } from "./plans";
+import { freeModel, type Mode } from "./plans";
 import { fenceAt, parseJson, parseShriken } from "./report";
 import type { ReviewRun, RunDeps, RunTarget } from "./runner";
 import { CHAT_IDLE, settingsSchema, type Review, type SettingsApi, type Settings } from "./settings";
 import type { Thread } from "./threads";
 
-export type AgentAction = { kind: "settings"; label: string; patch: Record<string, unknown> } | { kind: "ask"; label: string; prompt: string };
+export type AgentAction =
+  | { kind: "settings"; label: string; patch: Record<string, unknown> }
+  | { kind: "ask"; label: string; prompt: string; pr?: number }
+  | { kind: "comment"; label: string; pr: number; body: string }
+  | { kind: "merge"; label: string; pr: number; method?: "merge" | "squash" | "rebase" };
 
 export interface AgentReport {
   summary: string;
@@ -61,8 +65,16 @@ const CHAT_KEY = /^[^$]*\$\{\{\s*github\.event\.client_payload\.chat\.id\b/;
 
 const actionSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("settings"), label: z.string().min(1).max(60), patch: z.record(z.string(), z.unknown()) }),
-  z.object({ kind: z.literal("ask"), label: z.string().min(1).max(60), prompt: z.string().min(1).max(2000) }),
+  z.object({ kind: z.literal("ask"), label: z.string().min(1).max(60), prompt: z.string().min(1).max(2000), pr: z.number().int().positive().optional() }),
+  z.object({ kind: z.literal("comment"), label: z.string().min(1).max(60), pr: z.number().int().positive(), body: z.string().min(1).max(20_000) }),
+  z.object({ kind: z.literal("merge"), label: z.string().min(1).max(60), pr: z.number().int().positive(), method: z.enum(["merge", "squash", "rebase"]).optional() }),
 ]);
+
+const MODE_RULES: Record<Mode, string> = {
+  ask: "The maintainer runs each action with a click.",
+  auto: "Comment actions post as soon as you answer, the maintainer runs the rest with a click.",
+  bypass: "Comment and merge actions run as soon as you answer, the maintainer runs the rest with a click.",
+};
 
 const extrasSchema = z.object({ commit: z.string().min(1).optional(), actions: z.array(z.unknown()).max(6).default([]) });
 
@@ -92,14 +104,16 @@ ${history.length ? `\n# Earlier in this conversation\n${history.map((turn) => `M
 ${thread ? `A reply in the review thread at \`${thread.path}${thread.line === null ? "" : `:${thread.line}`}\` about "${thread.title}". The thread so far:\n${list(thread.replies, (reply) => `- ${reply.author}: ${reply.body}`)}\n\n` : ""}${job.prompt}
 
 # How to work
-Answer the ask and only the ask: a greeting gets a short greeting, and the context above is for you, not something to recite. Answer questions from the code with your tools. When the ask needs code changes, make them in the working directory and run the commands that prove them. Change nothing when the ask is only a question. Never edit anything under .github/workflows, never weaken a test or a check, never commit, push or switch branches: the runner commits your working tree${pr && !pr.fork ? ` to ${pr.head}` : " to a new branch and opens a pull request"}. You cannot change settings yourself, propose them as an action.
+Answer the ask and only the ask: a greeting gets a short greeting, and the context above is for you, not something to recite. Answer questions from the code with your tools. When the ask needs code changes, make them in the working directory and run the commands that prove them. Change nothing when the ask is only a question. Never edit anything under .github/workflows, never weaken a test or a check, never commit, push or switch branches: the runner commits your working tree${pr && !pr.fork ? ` to ${pr.head}` : " to a new branch and opens a pull request, so to change an open pull request offer an ask action with its number"}. You cannot change settings, comment on GitHub or merge yourself: propose them as actions and Shrike runs them as its GitHub App. ${MODE_RULES[job.chat?.mode ?? "ask"]} Propose a merge only when the maintainer asks for one.
 
 # Output contract
 Answer with one \`\`\`markdown fenced block: short paragraphs, inline code, bold and at most three fenced code blocks. Name pull requests, issues, commits, files, reviews and settings with reference tokens, they render as links: [pull:<n>], [issue:<n>], [commit:<sha>], [file:<path>] or [file:<path>:<line>], [review:<name>], [settings:<key>]. Write the token where the name goes, as in "[pull:14] adds page helpers", never beside the same name as in "#14 [pull:14]" and never as a row of citations after a sentence. Say what you changed, if anything.
 Then, only when useful, one \`\`\`json fenced block:
 {"commit": "<at most 70 characters saying what you changed, only when you changed files>", "actions": [
   {"kind": "settings", "label": "<button text>", "patch": {"<setting>": <new value>}},
-  {"kind": "ask", "label": "<button text>", "prompt": "<a follow up the maintainer may want to send>"}
+  {"kind": "ask", "label": "<button text>", "prompt": "<a follow up the maintainer may want to send>", "pr": <optional number of the open pull request to run it on>},
+  {"kind": "comment", "label": "<button text>", "pr": <pull request number>, "body": "<the comment in GitHub markdown, without reference tokens>"},
+  {"kind": "merge", "label": "<button text>", "pr": <pull request number>, "method": "squash" | "merge" | "rebase"}
 ]}
 A settings patch holds only keys from the settings above, with valid values. Offer at most three actions.`;
 }
@@ -110,7 +124,7 @@ export const followUpPrompt = ({ job, pr, base }: AgentContext): string =>
 # The ask
 ${job.prompt}
 
-Work and answer as before, under the same rules and output contract.`;
+Work and answer as before, under the same rules and output contract. ${MODE_RULES[job.chat?.mode ?? "ask"]}`;
 
 export const keyedOnChat = (workflow: string): boolean =>
   Object.values((Bun.YAML.parse(workflow) as { jobs?: Record<string, { concurrency?: string | { group?: string } }> } | null)?.jobs ?? {}).some((own) =>
@@ -119,11 +133,11 @@ export const keyedOnChat = (workflow: string): boolean =>
 
 export function parseAgentReply(text: string, settings: Settings): Pick<AgentReport, "summary" | "actions"> & { commit?: string } {
   const json = fenceAt(text, "```json");
-  const summary = parseShriken(json >= 0 && /"(actions|commit)"s*:/.test(text.slice(json)) ? text.slice(0, json) : text);
+  const summary = parseShriken(json >= 0 && /"(actions|commit)"\s*:/.test(text.slice(json)) ? text.slice(0, json) : text);
   const extras = json < 0 ? { actions: [] } : parseJson(text.slice(json), extrasSchema, "reply");
   const actions = extras.actions.flatMap((raw) => {
     const action = actionSchema.safeParse(raw);
-    return action.success && (action.data.kind === "ask" || settingsSchema.safeParse({ ...settings, ...action.data.patch }).success) ? [action.data] : [];
+    return action.success && (action.data.kind !== "settings" || settingsSchema.safeParse({ ...settings, ...action.data.patch }).success) ? [action.data] : [];
   });
   return { summary, actions, ...(extras.commit ? { commit: commitTitle(extras.commit) } : {}) };
 }

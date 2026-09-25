@@ -52,6 +52,22 @@ describe("parseAgentReply", () => {
     expect(parseAgentReply(reply, settings)).toEqual({ summary: "Yes, merge [pull:14].", actions: [] });
   });
 
+  test("keeps comment, merge and pull request asks, and drops them without a pull request", () => {
+    const parsed = parseAgentReply(
+      reply('{"actions": [{"kind": "comment", "label": "Post it", "pr": 14, "body": "Both autofixes are in."}, {"kind": "merge", "label": "Squash", "pr": 14, "method": "squash"}, {"kind": "ask", "label": "Fix on 14", "prompt": "Fix the off by one", "pr": 14}, {"kind": "comment", "label": "No pull", "body": "x"}, {"kind": "merge", "label": "Bad", "pr": 14, "method": "fast"}]}'),
+      settings,
+    );
+    expect(parsed.actions).toEqual([
+      { kind: "comment", label: "Post it", pr: 14, body: "Both autofixes are in." },
+      { kind: "merge", label: "Squash", pr: 14, method: "squash" },
+      { kind: "ask", label: "Fix on 14", prompt: "Fix the off by one", pr: 14 },
+    ]);
+  });
+
+  test("an actions block with a space before the colon is still left out", () => {
+    expect(parseAgentReply('Done.\n\n```json\n{"actions" : []}\n```', settings).summary).toBe("Done.");
+  });
+
   test("an answer without its markdown fence leaves the actions block out", () => {
     const parsed = parseAgentReply('No, I cannot merge [pull:14].\n\n```json\n{"actions": [{"kind": "ask", "label": "Draft a comment", "prompt": "Draft it"}]}\n```', settings);
     expect(parsed.summary).toBe("No, I cannot merge [pull:14].");
@@ -87,6 +103,16 @@ describe("githubMarkdown", () => {
 
 describe("buildAgentPrompt", () => {
   const pulls = [{ number: 7, title: "Add retries", author: "ana", head: "retries", base: "main", draft: false }];
+
+  test("the permission mode decides which actions run on their own", () => {
+    const prompt = (mode?: "ask" | "auto" | "bypass") => buildAgentPrompt({ job: { owner: "o", repo: "r", trigger: "dispatch", reviews: [], prompt: "hi", chat: { ...chat, mode } }, base: "main", pulls, settings, reviews: [] });
+    expect(prompt()).toContain("The maintainer runs each action with a click.");
+    expect(prompt("auto")).toContain("Comment actions post as soon as you answer");
+    expect(prompt("auto")).not.toContain("Comment and merge actions run");
+    expect(prompt("bypass")).toContain("Comment and merge actions run as soon as you answer");
+    expect(prompt()).toContain("to change an open pull request offer an ask action with its number");
+    expect(prompt()).toContain("Propose a merge only when the maintainer asks for one.");
+  });
 
   test("on a pull request it pushes to the head and lists the open pulls and settings", () => {
     const prompt = buildAgentPrompt({ job: { owner: "o", repo: "r", pr: 7, trigger: "comment", reviews: [], prompt: "make the retry count configurable" }, pr, base: "main", pulls, settings, reviews: [{ name: "code-review", description: "", body: "" }] });

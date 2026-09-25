@@ -8,6 +8,10 @@ export const EFFORTS = ["none", "minimal", "low", "medium", "high", "xhigh", "ma
 
 export type Effort = (typeof EFFORTS)[number];
 
+export const MODES = ["ask", "auto", "bypass"] as const;
+
+export type Mode = (typeof MODES)[number];
+
 export type PlanId = "free" | "pro" | "max" | "enterprise";
 
 export interface Plan {

@@ -1,7 +1,7 @@
 // Job model shared by webhook, action and runner. Maps GitHub events, comments
 // starting with shrike and check actions to reviews, an agent task or autofix.
 import { z } from "zod";
-import { EFFORTS } from "./plans";
+import { EFFORTS, MODES } from "./plans";
 
 export const chatSchema = z.object({
   id: z.string().uuid(),
@@ -10,6 +10,7 @@ export const chatSchema = z.object({
   branch: z.string().min(1),
   model: z.string().min(1).optional(),
   effort: z.enum(EFFORTS).optional(),
+  mode: z.enum(MODES).optional(),
   history: z.array(z.object({ ask: z.string(), reply: z.string() })).max(20).default([]),
 });
 
