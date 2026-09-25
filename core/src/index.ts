@@ -1,7 +1,9 @@
 // Public surface of the review engine, consumed by the Action
 // in this repository and by the hosted Shrike server.
-export { getBackend, backends } from "./backends";
-export type { Backend, AgentSession } from "./backends";
+export { FREE_MODEL, getBackend } from "./backends";
+export type { Backend, AgentSession, Gateway, GatewayModel } from "./backends";
+export { allows, BACKENDS, creditsFor, DEFAULT_PAID_MODEL, JOB_CAP_CREDITS, MIN_KEY_CREDITS, PAID_MODELS, paidModel, PLANS, TOPUP_CREDITS, usdFor } from "./plans";
+export type { PaidModel, Plan, PlanId, Tier } from "./plans";
 export { PullRequestClient, refreshingAuth } from "./github";
 export type { PullRequest, PullRequestHistory, PushIdentity } from "./github";
 export { chatSchema, CHECK_ACTIONS, jobFromEvent, jobSchema, parseTrigger } from "./job";
@@ -22,4 +24,4 @@ export { fingerprintOf, FINDING_MARKER } from "./threads";
 export type { Thread } from "./threads";
 export { globMatches, patchId } from "./diff";
 export { actionsIdToken, DEFAULT_REVIEWS, OIDC_AUDIENCE, resolveSettings, reviewSchema, SettingsApi, settingsSchema } from "./settings";
-export type { AutofixMode, Review, Settings } from "./settings";
+export type { AutofixMode, Lease, Review, Settings } from "./settings";

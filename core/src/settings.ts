@@ -1,13 +1,15 @@
 // What the Action fetches from the Shrike API: the repository's
 // settings and the reviews to run, authenticated with an OIDC token.
 import { z } from "zod";
+import type { Gateway } from "./backends/types";
+import { BACKENDS, paidModel } from "./plans";
 
 export const DEFAULT_REVIEWS = ["slop-review", "intent-review", "code-review", "security-review"];
 export const OIDC_AUDIENCE = "shrike";
 
 export const settingsSchema = z.strictObject({
   reviews: z.array(z.string().regex(/^[a-z0-9-]+$/)).default([]),
-  backend: z.string().min(1).default("acp"),
+  backend: z.enum(BACKENDS).default("acp"),
   model: z.string().min(1).optional(),
   session: z.enum(["fresh", "shared"]).default("fresh"),
   shriken: z.boolean().default(true),
@@ -17,7 +19,8 @@ export const settingsSchema = z.strictObject({
   capture: z.boolean().default(false),
   captureCommand: z.string().max(500).default(""),
   captureUrl: z.union([z.literal(""), z.url({ protocol: /^https?$/ })]).default(""),
-}).refine((settings) => !settings.capture || (settings.captureCommand.trim() !== "" && settings.captureUrl !== ""), { message: "capture needs the command that serves the app and the url it answers on" })
+}).refine((settings) => settings.backend !== "pi" || settings.model === undefined || paidModel(settings.model) !== undefined, { message: "the pi backend runs one of the Shrike plan models" })
+  .refine((settings) => !settings.capture || (settings.captureCommand.trim() !== "" && settings.captureUrl !== ""), { message: "capture needs the command that serves the app and the url it answers on" })
   .refine((settings) => settings.autofix !== "all" || settings.autofixReviews?.length !== 0, { message: "autofix of reviews and CI needs at least one review to fix, choose CI to fix only the checks" });
 
 export const reviewSchema = z.object({
@@ -30,6 +33,20 @@ export const reviewSchema = z.object({
   paths: z.array(z.string().min(1).max(200)).max(32).optional(),
 });
 
+const leaseSchema = z.object({
+  keyId: z.string().min(1),
+  key: z.string().min(1),
+  baseUrl: z.url(),
+  model: z.object({
+    id: z.string().min(1),
+    name: z.string().min(1),
+    contextWindow: z.number().int().positive(),
+    maxTokens: z.number().int().positive(),
+    cost: z.object({ input: z.number(), output: z.number(), cacheRead: z.number(), cacheWrite: z.number() }),
+  }),
+});
+
+export type Lease = Gateway & { keyId: string };
 export type Settings = z.infer<typeof settingsSchema>;
 export type Review = z.infer<typeof reviewSchema>;
 export type AutofixMode = Exclude<Settings["autofix"], "off">;
@@ -69,6 +86,20 @@ export class SettingsApi {
 
   async report(run: unknown): Promise<void> {
     await this.call("/v1/runs", { method: "POST", body: JSON.stringify(run) });
+  }
+
+  async lease(): Promise<Lease | { refused: string }> {
+    return this.call("/v1/gateway", { method: "POST" }).then(
+      (body) => leaseSchema.parse(body),
+      (error: Error) => {
+        if (!/answered 402:/.test(error.message)) throw error;
+        return { refused: error.message.replace(/^.*answered 402: /, "") };
+      },
+    );
+  }
+
+  async release(keyId: string): Promise<void> {
+    await this.call("/v1/gateway/settle", { method: "POST", body: JSON.stringify({ keyId }) });
   }
 
   async installationToken(): Promise<{ token: string; expiresAt: string; name: string; email: string }> {

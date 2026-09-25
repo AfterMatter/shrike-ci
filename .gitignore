@@ -5,3 +5,5 @@ node_modules/
 .playwright-mcp/
 *.log
 .claude/
+
+.vercel

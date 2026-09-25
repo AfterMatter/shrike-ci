@@ -36,7 +36,7 @@ jobs:
           api_url: ${{ vars.SHRIKE_API_URL }}
 ```
 
-`id-token: write` lets the job mint a GitHub OpenID Connect token. The Action sends it to the API, which verifies it against GitHub's public keys and answers with the settings and review instructions of exactly that repository. No secret is stored in the repository. The API then mints an installation token of the Shrike GitHub App for that repository, refreshed before it expires, and everything the run posts, the reviews, the checks, the comments and the media branch, carries the App's name. Without the App installed on the repository the Action falls back to the job token, which then needs `pull-requests: write`, `checks: write` and `issues: write` in the workflow and posts as `github-actions`. To use a paid provider add its key to the job environment, for example `ANTHROPIC_API_KEY`, and pick the model on the website.
+`id-token: write` lets the job mint a GitHub OpenID Connect token. The Action sends it to the API, which verifies it against GitHub's public keys and answers with the settings and review instructions of exactly that repository. No secret is stored in the repository. The API then mints an installation token of the Shrike GitHub App for that repository, refreshed before it expires, and everything the run posts, the reviews, the checks, the comments and the media branch, carries the App's name. Without the App installed on the repository the Action falls back to the job token, which then needs `pull-requests: write`, `checks: write` and `issues: write` in the workflow and posts as `github-actions`. Free runs use OpenCode with its free `opencode/big-pickle` model. On a Shrike plan the repository picks a plan model on the website; the Action then leases a Vercel AI Gateway key from the API for that one job, capped at the account's credits, masks it in the log and hands it only to the pi agent, and releases it when the job ends. No model key is ever stored in the repository. Out of credits, the job falls back to the free model.
 
 ### What happens on a pull request
 
@@ -85,7 +85,7 @@ Draft pull requests are skipped until marked ready for review. Pull requests fro
 ## Layout
 
 ```
-core/       review engine: job model, prompt, report contract, diff, checkout, GitHub client, threads, card, runner, capture, autofix, agent, settings client, backends/acp
+core/       review engine: job model, prompt, report contract, diff, checkout, GitHub client, threads, card, runner, capture, autofix, agent, settings client, backends (acp loop, opencode, pi), plans
 action/     composite GitHub Action around the engine
 ```
 
@@ -99,4 +99,4 @@ bun run typecheck
 bun test
 ```
 
-The `acp` backend needs the OpenCode CLI on `PATH` (`bun add -g opencode-ai`).
+The `acp` backend needs the OpenCode CLI on `PATH` (`bun add -g opencode-ai`); the `pi` backend installs `pi-acp` and `@earendil-works/pi-coding-agent` on first use when they are missing.

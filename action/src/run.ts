@@ -19,7 +19,13 @@ if (!job) {
 }
 
 const api = new SettingsApi(apiUrl.replace(/\/$/, ""), () => actionsIdToken());
-const { settings, reviews } = await api.settings(job.reviews);
+const fetched = await api.settings(job.reviews);
+const lease = fetched.settings.backend === "pi" ? await api.lease() : null;
+if (lease && "refused" in lease) console.log(`${lease.refused}, reviewing with the free model instead`);
+const gateway = lease && !("refused" in lease) ? lease : undefined;
+if (gateway) console.log(`::add-mask::${gateway.key}`);
+const settings = gateway || fetched.settings.backend !== "pi" ? fetched.settings : { ...fetched.settings, backend: "acp" as const, model: undefined };
+const { reviews } = fetched;
 console.log(`settings: reviews=${(job.reviews.length ? job.reviews : settings.reviews).join(",")} backend=${settings.backend} model=${settings.model ?? "default"} session=${settings.session}`);
 
 const asApp = (): Promise<PushIdentity> =>
@@ -45,7 +51,7 @@ process.once("SIGINT", stop);
 process.once("SIGTERM", stop);
 const runs = await runJob(job, {
   gh: new PullRequestClient(new Octokit({ authStrategy: refreshingAuth(asApp, identity) })),
-  backend: getBackend(settings.backend),
+  backend: getBackend(settings.backend, gateway),
   settings,
   reviews,
   cwd,
@@ -57,7 +63,7 @@ const runs = await runJob(job, {
   capture: { identity: asApp },
   actionsRun,
   signal: abort.signal,
-});
+}).finally(() => gateway && api.release(gateway.keyId).catch((error: Error) => console.log(`could not release the gateway key, it expires on its own: ${error.message}`)));
 
 const reportsDir = join(env("RUNNER_TEMP") ?? cwd, "shrike-reports");
 await mkdir(reportsDir, { recursive: true });

@@ -33,3 +33,17 @@ export interface Backend {
   readonly defaultModel: string;
   open(options: SessionOptions): Promise<AgentSession>;
 }
+
+export interface GatewayModel {
+  id: string;
+  name: string;
+  contextWindow: number;
+  maxTokens: number;
+  cost: { input: number; output: number; cacheRead: number; cacheWrite: number };
+}
+
+export interface Gateway {
+  baseUrl: string;
+  key: string;
+  model: GatewayModel;
+}

@@ -2,7 +2,8 @@ import { expect, test } from "bun:test";
 import { access, mkdtemp, readdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { acpBackend, opencodeConfig, toolOutput } from "../src/backends/acp";
+import { toolOutput } from "../src/backends/acp";
+import { opencodeBackend, opencodeConfig } from "../src/backends/opencode";
 import { fileIn } from "../src/capture";
 import { git } from "../src/checkout";
 
@@ -57,7 +58,7 @@ test.skipIf(!live)("acp backend with a capture directory opens a page in the bro
   const port = 20_000 + Math.floor(Math.random() * 20_000);
   const app = Bun.spawn(["bun", "run", SERVER, String(port)], { cwd, stdout: "ignore", stderr: "ignore" });
   const logs: string[] = [];
-  const session = await acpBackend.open({ cwd, captureDir, log: (line) => logs.push(line) });
+  const session = await opencodeBackend().open({ cwd, captureDir, log: (line) => logs.push(line) });
   try {
     for (let tries = 0; tries < 30 && !(await fetch(`http://127.0.0.1:${port}/`).then(() => true, () => false)); tries++) await new Promise((resolve) => setTimeout(resolve, 500));
     const reply = await session.prompt(
@@ -77,6 +78,25 @@ test.skipIf(!live)("acp backend with a capture directory opens a page in the bro
   }
 }, 300_000);
 
+test.skipIf(!live)("opencode on a plan talks to the gateway with the job key and the plan model", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "acp-gateway-"));
+  const seen = join(tmpdir(), `${cwd.split(/[\\/]/).pop()}-seen.json`);
+  await writeFile(join(cwd, "note.txt"), "shrike-marker-42");
+  const port = 20_000 + Math.floor(Math.random() * 20_000);
+  const server = Bun.spawn(["bun", "run", join(import.meta.dir, "fixtures", "llm.ts"), String(port), seen], { stdout: "pipe", stderr: "ignore" });
+  await new Response(server.stdout).body!.getReader().read();
+  const model = { id: "zai/glm-5.3", name: "GLM-5.3", contextWindow: 200_000, maxTokens: 32_000, cost: { input: 2, output: 6, cacheRead: 0.5, cacheWrite: 0 } };
+  const session = await opencodeBackend({ baseUrl: `http://127.0.0.1:${port}`, key: "vck_job_key", model }).open({ cwd, log: () => {} });
+  try {
+    await session.prompt("Read note.txt.");
+    const request = JSON.parse(await readFile(seen, "utf8")) as { path: string; authorization: string; model: string };
+    expect(request).toMatchObject({ path: "/v1/chat/completions", authorization: "Bearer vck_job_key", model: "zai/glm-5.3" });
+  } finally {
+    await session.close();
+    server.kill();
+  }
+}, 240_000);
+
 test.skipIf(!live)("acp backend reads files, cannot edit, and does not leak tokens", async () => {
   const cwd = await mkdtemp(join(tmpdir(), "acp-live-"));
   await writeFile(join(cwd, "note.txt"), "shrike-marker-42");
@@ -85,7 +105,7 @@ test.skipIf(!live)("acp backend reads files, cannot edit, and does not leak toke
   await git(cwd, ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "marker-commit"]);
   process.env.GITHUB_TOKEN = "ghs_should_not_leak";
   const logs: string[] = [];
-  const session = await acpBackend.open({ cwd, log: (line) => logs.push(line) });
+  const session = await opencodeBackend().open({ cwd, log: (line) => logs.push(line) });
   try {
     const read = await session.prompt('Read note.txt with your read tool and reply with one ```json block: {"content": "<file content>"}. Nothing else.');
     expect(read.text).toContain("shrike-marker-42");
