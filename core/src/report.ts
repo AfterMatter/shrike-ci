@@ -108,7 +108,8 @@ export function parseShriken(text: string): string {
   const open = text.lastIndexOf("```markdown");
   const json = text.lastIndexOf("```json");
   const close = text.lastIndexOf("```", json > open ? json - 1 : text.length);
-  const document = (fenced ?? (open >= 0 && close > open ? text.slice(open + "```markdown".length, close) : text)).trim();
+  const end = close > open ? close : json > open ? json : text.length;
+  const document = (fenced ?? (open >= 0 ? text.slice(open + "```markdown".length, end) : text)).trim();
   if (!document) throw new Error("no markdown document found");
   return document;
 }

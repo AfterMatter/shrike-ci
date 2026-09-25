@@ -75,6 +75,12 @@ describe("parseShriken", () => {
     expect(parseShriken("````markdown\nSee:\n\n```diff\n+x\n```\n\nDone.\n````\n```json\n{}\n```")).toBe("See:\n\n```diff\n+x\n```\n\nDone.");
   });
 
+  test("an unclosed markdown fence still gives its content", () => {
+    expect(parseShriken("\n\n\n```markdown\nGuard pageCount\n\n`pageCount` used floor.")).toBe("Guard pageCount\n\n`pageCount` used floor.");
+    expect(parseShriken("```markdown\nThe call.\n```json\n{\"scores\": {}}\n```")).toBe("The call.");
+    expect(() => parseShriken("```markdown\n")).toThrow(/no markdown document/);
+  });
+
   test("falls back to the whole text and rejects empty answers", () => {
     expect(parseShriken("  # Plain\n\ntext  ")).toBe("# Plain\n\ntext");
     expect(parseShriken("text ending with a fence\n```")).toBe("text ending with a fence\n```");
