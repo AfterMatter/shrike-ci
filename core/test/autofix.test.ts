@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { attemptsAtHead, autofixMessage, commitAndPush, commitTitle, fixes, headMessages, planOf, problemsOf, reviewsGreen, tailOf, trailerOf, waitForChecks } from "../src/autofix";
+import { attemptsAtHead, autofixMessage, commitAndPush, commitTitle, fixes, headMessages, planOf, problemsOf, reviewsGreen, tailOf, trailerOf, waitForChecks, type Plan } from "../src/autofix";
 import { git } from "../src/checkout";
 import type { CheckRun, PullRequest, PullRequestClient } from "../src/github";
 import type { ReviewRun } from "../src/runner";
@@ -217,5 +217,16 @@ describe("commit and push", () => {
   test("commit titles come from the first line without heading marks, cut to 70 characters", () => {
     expect(commitTitle("# Fix it\n\nMore")).toBe("Fix it");
     expect(commitTitle(`${"x".repeat(80)}\nrest`)).toHaveLength(70);
+  });
+
+  test("a commit message never starts or ends with a code fence", () => {
+    const plan: Plan = { mode: "all", named: ["code-review"] };
+    const expected = ["Shrike autofix: Guard pageCount", "Use Math.ceil.", "Shrike-Autofix: all code-review"];
+    expect(autofixMessage("```markdown\nGuard pageCount\n\nUse Math.ceil.", plan)).toEqual(expected);
+    expect(autofixMessage("\n\n```md\nGuard pageCount\n\nUse Math.ceil.\n```\n", plan)).toEqual(expected);
+    expect(autofixMessage("```\nGuard pageCount\n\nUse Math.ceil.\n```", plan)).toEqual(expected);
+    expect(autofixMessage("Guard pageCount\n\n```ts\nx\n```\n\nDone.", plan)[1]).toBe("```ts\nx\n```\n\nDone.");
+    expect(autofixMessage("```markdown\n```", plan)).toEqual(["Shrike autofix", "Shrike-Autofix: all code-review"]);
+    expect(autofixMessage("```markdown\nGuard pageCount", plan).join("\n")).not.toContain("```");
   });
 });

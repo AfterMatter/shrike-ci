@@ -100,8 +100,12 @@ export interface PushTarget {
 }
 
 export const autofixMessage = (summary: string, plan: Plan): string[] => {
-  const body = summary.split("\n").slice(1).join("\n").trim();
-  return [`Shrike autofix: ${commitTitle(summary)}`, ...(body ? [body] : []), `${TRAILER}: ${[plan.mode, ...plan.named].join(" ")}`];
+  const lines = summary.split("\n");
+  const edge = (line: string) => /^\s*(```.*)?$/.test(line);
+  while (lines.length && edge(lines[0]!)) lines.shift();
+  while (lines.length && edge(lines.at(-1)!)) lines.pop();
+  const body = lines.slice(1).join("\n").trim();
+  return [lines.length ? `Shrike autofix: ${commitTitle(lines[0]!)}` : "Shrike autofix", ...(body ? [body] : []), `${TRAILER}: ${[plan.mode, ...plan.named].join(" ")}`];
 };
 
 export async function commitAndPush(cwd: string, target: PushTarget, message: string[], identity: PushIdentity, remote?: string): Promise<string | null> {
