@@ -176,7 +176,15 @@ export function imagesOf(body: string, cap = 12): Image[] {
   return images.slice(0, cap);
 }
 
-export const renderReviewBody = (count: number): string => `## Shrike\n\n${count} new ${count === 1 ? "problem" : "problems"} in this push, one thread each. Threads close themselves once a later push fixes them.`;
+export const renderReviewBody = (threads: string[]): string => {
+  const heads = threads.map(headOf);
+  if (heads.length === 1) return `Shrike found ${heads[0]!.severity === "error" ? "an error" : "a warning"}: **${heads[0]!.title}**.`;
+  const counts = (["error", "warning"] as const).flatMap((severity) => {
+    const count = heads.filter((head) => head.severity === severity).length;
+    return count ? [`${count} ${severity}${count === 1 ? "" : "s"}`] : [];
+  });
+  return `Shrike found ${counts.join(" and ")}.`;
+};
 
 export function splitFlagged(flagged: Flagged[], files: PullRequestFile[]): { inline: Flagged[]; outside: Flagged[] } {
   const lines = new Map(files.map((f) => [f.path, f.lines]));
@@ -262,7 +270,7 @@ export class PullRequestClient {
   }
 
   async postReview(pr: PullRequest, threads: { path: string; line: number; startLine?: number; body: string }[]): Promise<{ id: number; url: string }> {
-    const base = { owner: pr.owner, repo: pr.repo, pull_number: pr.number, commit_id: pr.headSha, event: "COMMENT" as const, body: renderReviewBody(threads.length) };
+    const base = { owner: pr.owner, repo: pr.repo, pull_number: pr.number, commit_id: pr.headSha, event: "COMMENT" as const, body: renderReviewBody(threads.map((thread) => thread.body)) };
     const comments = threads.map((thread) => ({
       path: thread.path,
       line: thread.line,

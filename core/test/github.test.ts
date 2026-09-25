@@ -64,9 +64,13 @@ describe("splitFlagged", () => {
 });
 
 describe("rendering", () => {
-  test("the review body counts the threads and says they close themselves", () => {
-    expect(renderReviewBody(1)).toBe("## Shrike\n\n1 new problem in this push, one thread each. Threads close themselves once a later push fixes them.");
-    expect(renderReviewBody(3)).toContain("3 new problems");
+  test("the review body says what Shrike found and nothing more", () => {
+    const thread = (severity: string, title: string) => `<!-- shrike:finding 0123456789abcdef -->\n**[${severity}] ${title}** · code-review, slop-review\n\nBody.`;
+    expect(renderReviewBody([thread("error", "Partial last page is lost")])).toBe("Shrike found an error: **Partial last page is lost**.");
+    expect(renderReviewBody([thread("warning", "Slow loop")])).toBe("Shrike found a warning: **Slow loop**.");
+    expect(renderReviewBody([thread("error", "a"), thread("warning", "b"), thread("error", "c")])).toBe("Shrike found 2 errors and 1 warning.");
+    expect(renderReviewBody([thread("warning", "a"), thread("warning", "b")])).toBe("Shrike found 2 warnings.");
+    expect(renderReviewBody([thread("error", "a")])).not.toMatch(/## Shrike|one thread each|close themselves/);
   });
 
   test("a thread node becomes a thread only when its first comment carries a fingerprint", () => {
@@ -151,7 +155,7 @@ describe("PullRequestClient", () => {
     const threads = [{ path: "a.ts", line: 2, startLine: 1, body: "<!-- shrike:finding 0123456789abcdef -->\n**[warning] t** · code-review\n\nb" }, { path: "b.ts", line: 5, body: "<!-- shrike:finding fedcba9876543210 -->\n**[error] u** · cleanup\n\nc" }];
     expect(await client.postReview(pr, threads)).toEqual({ id: 1, url: "https://gh/review/1" });
     const review = calls.find((c) => c.method === "createReview")!.args;
-    expect(review).toMatchObject({ owner: "o", repo: "r", pull_number: 2, commit_id: "abc", event: "COMMENT", body: renderReviewBody(2) });
+    expect(review).toMatchObject({ owner: "o", repo: "r", pull_number: 2, commit_id: "abc", event: "COMMENT", body: "Shrike found 1 error and 1 warning." });
     expect(review.comments).toEqual([
       { path: "a.ts", line: 2, side: "RIGHT", start_line: 1, start_side: "RIGHT", body: threads[0]!.body },
       { path: "b.ts", line: 5, side: "RIGHT", body: threads[1]!.body },
