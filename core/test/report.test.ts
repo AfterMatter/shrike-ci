@@ -122,7 +122,8 @@ describe("parseShrikenCall", () => {
   test("reads the json block after the document, keeps the asked reviews in order and leaves the document intact", () => {
     expect(parseShrikenCall(answer, ["b", "a"])).toEqual({ decision: "hold", scores: { b: 55, a: 90 } });
     expect(parseShriken(answer)).toBe("Text [review:a].\n\n```diff\n-x\n+y\n```");
-    expect(parseShriken("```markdown\nOnly text.\n```")).toBe("Only text.");  });
+    expect(parseShriken("```markdown\nOnly text.\n```")).toBe("Only text.");
+  });
 
   test("refuses missing reviews, values outside 0 to 100, decimals and answers without the block", () => {
     expect(() => parseShrikenCall(answer, ["a", "d"])).toThrow("scores missing for d");
