@@ -2,7 +2,8 @@ import { expect, test } from "bun:test";
 import { access, mkdtemp, readdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { toolOutput } from "../src/backends/acp";
+import { spawn } from "node:child_process";
+import { stop, toolOutput } from "../src/backends/acp";
 import { opencodeBackend, opencodeConfig } from "../src/backends/opencode";
 import { fileIn } from "../src/capture";
 import { git } from "../src/checkout";
@@ -29,6 +30,17 @@ test("the opencode config denies writing and the browser for reviews but keeps b
     cwd: "/tmp/shots",
     enabled: true,
   });
+});
+
+test("stopping an agent that ignores SIGTERM kills it after the grace period", async () => {
+  const child = spawn(process.execPath, ["-e", "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000); console.log('up')"], { stdio: ["ignore", "pipe", "ignore"] });
+  const exited = new Promise<void>((resolve) => child.once("exit", () => resolve()));
+  await new Promise((resolve) => child.stdout!.once("data", resolve));
+  const started = Date.now();
+  await stop(child, exited, 300);
+  expect(child.exitCode !== null || child.signalCode !== null).toBe(true);
+  expect(Date.now() - started).toBeLessThan(5000);
+  await stop(child, exited, 300);
 });
 
 test("a tool result reads its text, diff and resource blocks, and falls back to the raw output", () => {

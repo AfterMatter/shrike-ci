@@ -1,6 +1,6 @@
 // Agent Client Protocol session over a stdio subprocess, shared by
 // every harness: spawns it, picks the model, streams replies and usage.
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { Readable, Writable } from "node:stream";
 import * as acp from "@agentclientprotocol/sdk";
 import type { AgentReply, AgentSession, ToolCall } from "./types";
@@ -18,12 +18,21 @@ export interface AcpLaunch {
 }
 
 export const DEFAULT_TIMEOUT_MS = 20 * 60 * 1000;
+export const STOP_GRACE_MS = 5000;
 const SECRET_ENV = ["GITHUB_TOKEN", "INPUT_GITHUB_TOKEN", "GITHUB_APP_PRIVATE_KEY", "GITHUB_WEBHOOK_SECRET", "ACTIONS_ID_TOKEN_REQUEST_TOKEN", "ACTIONS_RUNTIME_TOKEN"];
 
 export const childEnv = (extra: Record<string, string> = {}): Record<string, string | undefined> => ({
   ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !SECRET_ENV.includes(key))),
   ...extra,
 });
+
+export const stop = async (child: ChildProcess, exited: Promise<void>, graceMs = STOP_GRACE_MS): Promise<void> => {
+  if (child.exitCode !== null || child.signalCode !== null) return exited;
+  child.kill();
+  const forced = setTimeout(() => child.kill("SIGKILL"), graceMs);
+  await exited;
+  clearTimeout(forced);
+};
 
 export const toolOutput = ({ content, rawOutput }: acp.ToolCallUpdate): string =>
   content?.length
@@ -59,8 +68,7 @@ export async function openAcp({ command, args, cwd, env, model, timeoutMs, log, 
   const close = async () => {
     clearTimeout(timer);
     connection.close();
-    if (child.exitCode === null) child.kill();
-    await exited;
+    await stop(child, exited);
   };
   try {
     await connection.agent.request(acp.methods.agent.initialize, { protocolVersion: acp.PROTOCOL_VERSION, clientCapabilities: {} });
