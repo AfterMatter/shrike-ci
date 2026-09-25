@@ -39,6 +39,7 @@ const LOG_LINES = 150;
 const LOG_CHARS = 8000;
 const FAILED = new Set(["failure", "timed_out", "action_required", "error"]);
 const PROTECTED = ".github/workflows";
+const CHECKOUT_HEADER = "http.https://github.com/.extraheader";
 
 export const trailerOf = (message: string): Plan | null => {
   const match = /^Shrike-Autofix: (ci|all)((?: [a-z0-9-]+)*)$/m.exec(message);
@@ -109,7 +110,7 @@ export async function commitAndPush(cwd: string, target: PushTarget, message: st
   if (!(await git(cwd, ["status", "--porcelain"]))) return null;
   await git(cwd, ["add", "-A"]);
   await git(cwd, ["-c", `user.name=${identity.name}`, "-c", `user.email=${identity.email}`, "commit", "-q", ...message.flatMap((paragraph) => ["-m", paragraph])]);
-  await git(cwd, ["push", "--quiet", remote ?? `https://x-access-token:${identity.token}@github.com/${target.owner}/${target.repo}.git`, `HEAD:refs/heads/${target.branch}`]).catch((error) => {
+  await git(cwd, ["-c", `${CHECKOUT_HEADER}=`, "push", "--quiet", remote ?? `https://x-access-token:${identity.token}@github.com/${target.owner}/${target.repo}.git`, `HEAD:refs/heads/${target.branch}`]).catch((error) => {
     throw hideToken(error, identity.token);
   });
   return git(cwd, ["rev-parse", "HEAD"]);

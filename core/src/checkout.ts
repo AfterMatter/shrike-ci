@@ -21,7 +21,7 @@ export function git(dir: string, args: string[]): Promise<string> {
     child.stdout.on("data", (chunk: Buffer) => (out += chunk));
     child.stderr.on("data", (chunk: Buffer) => (err += chunk));
     child.on("error", reject);
-    child.on("close", (code) => (code === 0 ? resolve(out.trim()) : reject(new Error(`git ${args.find((a) => !a.startsWith("-") && a !== "http.extraheader")} failed (${code}): ${err.trim() || out.trim()}`))));
+    child.on("close", (code) => (code === 0 ? resolve(out.trim()) : reject(new Error(`git ${args.find((arg, at) => !arg.startsWith("-") && args[at - 1] !== "-c")} failed (${code}): ${err.trim() || out.trim()}`))));
   });
 }
 

@@ -197,6 +197,14 @@ describe("commit and push", () => {
     expect(await git(work, ["show", "--stat", "--format=", "HEAD"])).not.toContain("workflows");
   });
 
+  test("a failed git call names its command, never a -c value", async () => {
+    const { work } = await repos();
+    const failure = await git(work, ["-c", "user.name=someone", "-c", "http.extraheader=AUTHORIZATION: basic c2VjcmV0", "no-such-command"]).then(() => null, (error: Error) => error.message);
+    expect(failure).toStartWith("git no-such-command failed (1): ");
+    expect(failure).not.toContain("c2VjcmV0");
+    expect(failure).not.toContain("user.name");
+  });
+
   test("a failed push never leaks the token", async () => {
     const { work } = await repos();
     await writeFile(join(work, "a.txt"), "two\n");
