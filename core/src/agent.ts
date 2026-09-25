@@ -8,7 +8,7 @@ import { ensureCheckout, git } from "./checkout";
 import type { Issue, OpenPull, PullRequest } from "./github";
 import type { Job } from "./job";
 import { ask, wires } from "./live";
-import { parseJson, parseShriken } from "./report";
+import { fenceAt, parseJson, parseShriken } from "./report";
 import type { ReviewRun, RunDeps, RunTarget } from "./runner";
 import { settingsSchema, type Review, type Settings } from "./settings";
 import type { Thread } from "./threads";
@@ -75,10 +75,10 @@ ${history.length ? `\n# Earlier in this conversation\n${history.map((turn) => `M
 ${thread ? `A reply in the review thread at \`${thread.path}${thread.line === null ? "" : `:${thread.line}`}\` about "${thread.title}". The thread so far:\n${list(thread.replies, (reply) => `- ${reply.author}: ${reply.body}`)}\n\n` : ""}${job.prompt}
 
 # How to work
-Answer questions from the code with your tools. When the ask needs code changes, make them in the working directory and run the commands that prove them. Change nothing when the ask is only a question. Never edit anything under .github/workflows, never weaken a test or a check, never commit, push or switch branches: the runner commits your working tree${pr && !pr.fork ? ` to ${pr.head}` : " to a new branch and opens a pull request"}. You cannot change settings yourself, propose them as an action.
+Answer the ask and only the ask: a greeting gets a short greeting, and the context above is for you, not something to recite. Answer questions from the code with your tools. When the ask needs code changes, make them in the working directory and run the commands that prove them. Change nothing when the ask is only a question. Never edit anything under .github/workflows, never weaken a test or a check, never commit, push or switch branches: the runner commits your working tree${pr && !pr.fork ? ` to ${pr.head}` : " to a new branch and opens a pull request"}. You cannot change settings yourself, propose them as an action.
 
 # Output contract
-Answer with one \`\`\`markdown fenced block: short paragraphs, inline code, bold and at most three fenced code blocks. Back every claim with a reference token: [pull:<n>], [issue:<n>], [commit:<sha>], [file:<path>] or [file:<path>:<line>], [review:<name>], [settings:<key>]. Say what you changed, if anything.
+Answer with one \`\`\`markdown fenced block: short paragraphs, inline code, bold and at most three fenced code blocks. Name pull requests, issues, commits, files, reviews and settings with reference tokens, they render as links: [pull:<n>], [issue:<n>], [commit:<sha>], [file:<path>] or [file:<path>:<line>], [review:<name>], [settings:<key>]. Write the token where the name goes, as in "[pull:14] adds page helpers", never beside the same name as in "#14 [pull:14]" and never as a row of citations after a sentence. Say what you changed, if anything.
 Then, only when useful, one \`\`\`json fenced block:
 {"commit": "<at most 70 characters saying what you changed, only when you changed files>", "actions": [
   {"kind": "settings", "label": "<button text>", "patch": {"<setting>": <new value>}},
@@ -89,7 +89,7 @@ A settings patch holds only keys from the settings above, with valid values. Off
 
 export function parseAgentReply(text: string, settings: Settings): Pick<AgentReport, "summary" | "actions"> & { commit?: string } {
   const summary = parseShriken(text);
-  const json = text.lastIndexOf("```json");
+  const json = fenceAt(text, "```json");
   const extras = json < 0 ? { actions: [] } : parseJson(text.slice(json), extrasSchema, "reply");
   const actions = extras.actions.flatMap((raw) => {
     const action = actionSchema.safeParse(raw);

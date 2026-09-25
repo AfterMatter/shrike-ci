@@ -81,6 +81,12 @@ describe("parseShriken", () => {
     expect(() => parseShriken("```markdown\n")).toThrow(/no markdown document/);
   });
 
+  test("fences quoted inside a line do not open or close the document", () => {
+    const document = '[pull:14] adds page helpers.\n- `81bffea` by the bot: "Shrike autofix: ```markdown" fixes a fence\n- a `` ``` `` stray, then [commit:2240943]';
+    expect(parseShriken(`\`\`\`markdown\n${document}\n\`\`\`\n\n\`\`\`json\n{}\n\`\`\``)).toBe(document);
+    expect(parseShriken("```markdown\nSend it as ```json below.\n```")).toBe("Send it as ```json below.");
+  });
+
   test("falls back to the whole text and rejects empty answers", () => {
     expect(parseShriken("  # Plain\n\ntext  ")).toBe("# Plain\n\ntext");
     expect(parseShriken("text ending with a fence\n```")).toBe("text ending with a fence\n```");
@@ -116,8 +122,7 @@ describe("parseShrikenCall", () => {
   test("reads the json block after the document, keeps the asked reviews in order and leaves the document intact", () => {
     expect(parseShrikenCall(answer, ["b", "a"])).toEqual({ decision: "hold", scores: { b: 55, a: 90 } });
     expect(parseShriken(answer)).toBe("Text [review:a].\n\n```diff\n-x\n+y\n```");
-    expect(parseShriken("```markdown\nOnly text.\n```")).toBe("Only text.");
-  });
+    expect(parseShriken("```markdown\nOnly text.\n```")).toBe("Only text.");  });
 
   test("refuses missing reviews, values outside 0 to 100, decimals and answers without the block", () => {
     expect(() => parseShrikenCall(answer, ["a", "d"])).toThrow("scores missing for d");

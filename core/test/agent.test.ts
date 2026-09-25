@@ -39,6 +39,14 @@ describe("parseAgentReply", () => {
     expect(parseAgentReply("```markdown\nIt is safe, see [file:src/api.ts:12].\n```", settings)).toEqual({ summary: "It is safe, see [file:src/api.ts:12].", actions: [] });
   });
 
+  test("a fence quoted inside the answer keeps the whole answer and its actions", () => {
+    const answer = '[pull:14] tests autofix.\n- `81bffea` by the bot: "Shrike autofix: ```markdown" fixes a fence\n- it mentions ```json once';
+    expect(parseAgentReply(`\`\`\`markdown\n${answer}\n\`\`\`\n\n\`\`\`json\n{"actions": [{"kind": "ask", "label": "Merge it", "prompt": "Merge [pull:14]?"}]}\n\`\`\``, settings)).toEqual({
+      summary: answer,
+      actions: [{ kind: "ask", label: "Merge it", prompt: "Merge [pull:14]?" }],
+    });
+  });
+
   test("commit titles are cut to one short line", () => {
     expect(parseAgentReply(reply(`{"commit": "# ${"x".repeat(90)}"}`), settings).commit).toBe("x".repeat(70));
   });
