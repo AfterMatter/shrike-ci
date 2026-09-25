@@ -52,6 +52,18 @@ describe("parseAgentReply", () => {
     expect(parseAgentReply(reply, settings)).toEqual({ summary: "Yes, merge [pull:14].", actions: [] });
   });
 
+  test("an answer without its markdown fence leaves the actions block out", () => {
+    const parsed = parseAgentReply('No, I cannot merge [pull:14].\n\n```json\n{"actions": [{"kind": "ask", "label": "Draft a comment", "prompt": "Draft it"}]}\n```', settings);
+    expect(parsed.summary).toBe("No, I cannot merge [pull:14].");
+    expect(parsed.summary).not.toContain("actions");
+    expect(parsed.actions).toEqual([{ kind: "ask", label: "Draft a comment", prompt: "Draft it" }]);
+  });
+
+  test("a json sample in an unfenced answer stays in the answer", () => {
+    const answer = 'The config looks like this:\n\n```json\n{"reviews": ["code-review"]}\n```';
+    expect(parseAgentReply(answer, settings)).toEqual({ summary: answer, actions: [] });
+  });
+
   test("commit titles are cut to one short line", () => {
     expect(parseAgentReply(reply(`{"commit": "# ${"x".repeat(90)}"}`), settings).commit).toBe("x".repeat(70));
   });

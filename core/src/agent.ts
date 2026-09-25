@@ -118,8 +118,8 @@ export const keyedOnChat = (workflow: string): boolean =>
   );
 
 export function parseAgentReply(text: string, settings: Settings): Pick<AgentReport, "summary" | "actions"> & { commit?: string } {
-  const summary = parseShriken(text);
   const json = fenceAt(text, "```json");
+  const summary = parseShriken(json >= 0 && /"(actions|commit)"s*:/.test(text.slice(json)) ? text.slice(0, json) : text);
   const extras = json < 0 ? { actions: [] } : parseJson(text.slice(json), extrasSchema, "reply");
   const actions = extras.actions.flatMap((raw) => {
     const action = actionSchema.safeParse(raw);
