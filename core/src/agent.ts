@@ -72,8 +72,8 @@ const actionSchema = z.discriminatedUnion("kind", [
 
 const MODE_RULES: Record<Mode, string> = {
   ask: "The maintainer runs each action with a click.",
-  auto: "Comment actions post as soon as you answer, the maintainer runs the rest with a click.",
-  bypass: "Comment and merge actions run as soon as you answer, the maintainer runs the rest with a click.",
+  auto: "Comment actions post on their own as soon as you answer, so write about them as done and never ask the maintainer to click them. The maintainer runs the rest with a click.",
+  bypass: "Comment and merge actions run on their own as soon as you answer, so write about them as done and never ask the maintainer to click them. The maintainer runs the rest with a click.",
 };
 
 const extrasSchema = z.object({ commit: z.string().min(1).optional(), actions: z.array(z.unknown()).max(6).default([]) });

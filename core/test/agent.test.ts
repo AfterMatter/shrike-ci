@@ -107,9 +107,11 @@ describe("buildAgentPrompt", () => {
   test("the permission mode decides which actions run on their own", () => {
     const prompt = (mode?: "ask" | "auto" | "bypass") => buildAgentPrompt({ job: { owner: "o", repo: "r", trigger: "dispatch", reviews: [], prompt: "hi", chat: { ...chat, mode } }, base: "main", pulls, settings, reviews: [] });
     expect(prompt()).toContain("The maintainer runs each action with a click.");
-    expect(prompt("auto")).toContain("Comment actions post as soon as you answer");
+    expect(prompt("auto")).toContain("Comment actions post on their own as soon as you answer");
     expect(prompt("auto")).not.toContain("Comment and merge actions run");
-    expect(prompt("bypass")).toContain("Comment and merge actions run as soon as you answer");
+    expect(prompt("bypass")).toContain("Comment and merge actions run on their own as soon as you answer");
+    expect(prompt("bypass")).toContain("never ask the maintainer to click them");
+    expect(prompt()).not.toContain("never ask the maintainer to click them");
     expect(prompt()).toContain("to change an open pull request offer an ask action with its number");
     expect(prompt()).toContain("Propose a merge only when the maintainer asks for one.");
   });
