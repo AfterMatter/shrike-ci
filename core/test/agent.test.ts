@@ -47,6 +47,11 @@ describe("parseAgentReply", () => {
     });
   });
 
+  test("notes glued before the answer fence are left out", () => {
+    const reply = "I'll verify [pull:14] in a copy.The PR tests pass; I'm checking the files.```markdown\nYes, merge [pull:14].\n```\n```json\n{\"actions\": []}\n```";
+    expect(parseAgentReply(reply, settings)).toEqual({ summary: "Yes, merge [pull:14].", actions: [] });
+  });
+
   test("commit titles are cut to one short line", () => {
     expect(parseAgentReply(reply(`{"commit": "# ${"x".repeat(90)}"}`), settings).commit).toBe("x".repeat(70));
   });

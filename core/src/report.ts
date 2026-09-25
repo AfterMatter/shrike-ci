@@ -84,7 +84,7 @@ export const spotRange = (spot: Spot): string => (spot.startLine === undefined ?
 
 export const spotAt = (spot: Spot): string => `${spot.path}:${spotRange(spot)}`;
 
-export const fenceAt = (text: string, fence: string, before = text.length): number => [...text.slice(0, before).matchAll(new RegExp(`^${fence}[ \t]*$`, "gm"))].at(-1)?.index ?? -1;
+export const fenceAt = (text: string, fence: string, before = text.length): number => [...text.slice(0, before).matchAll(new RegExp(`${fence}[ \t]*$`, "gm"))].at(-1)?.index ?? -1;
 
 export const fenced = (lang: string, code: string | undefined, gap: string): string => (code === undefined ? "" : `${gap}\`\`\`${lang}\n${code}\n\`\`\``);
 
@@ -109,7 +109,7 @@ export function parseShriken(text: string): string {
   const fenced = [...text.matchAll(/````markdown\n([\s\S]*?)\n````/g)].at(-1)?.[1];
   const open = fenceAt(text, "```markdown");
   const json = fenceAt(text, "```json");
-  const close = fenceAt(text, "```", json > open ? json : text.length);
+  const close = fenceAt(text, "^```", json > open ? json : text.length);
   const end = close > open ? close : json > open ? json : text.length;
   const document = (fenced ?? (open >= 0 ? text.slice(open + "```markdown".length, end) : text)).trim();
   if (!document) throw new Error("no markdown document found");
