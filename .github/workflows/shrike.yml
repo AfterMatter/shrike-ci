@@ -8,12 +8,10 @@ on:
     types: [created]
   repository_dispatch:
     types: [shrike]
-concurrency:
-  group: shrike-${{ github.event.pull_request.number || github.event.issue.number || github.event.client_payload.pr || github.event.client_payload.chat.id }}
-  cancel-in-progress: false
 jobs:
   review:
-    if: github.event_name != 'issue_comment' || startsWith(github.event.comment.body, 'shrike')
+    if: ${{ !github.event.comment || (github.event.comment.user.type != 'Bot' && startsWith(github.event.comment.body, 'shrike')) }}
+    concurrency: shrike-${{ github.event.pull_request.number || github.event.issue.number || github.event.client_payload.pr || github.event.client_payload.chat.id }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
