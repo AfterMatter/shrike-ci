@@ -2,7 +2,7 @@
 // settings and the reviews to run, authenticated with an OIDC token.
 import { z } from "zod";
 import type { Gateway } from "./backends/types";
-import { BACKENDS, paidModel } from "./plans";
+import { BACKENDS, SHRIKER_PRO } from "./plans";
 
 export const DEFAULT_REVIEWS = ["slop-review", "intent-review", "code-review", "security-review"];
 export const OIDC_AUDIENCE = "shrike";
@@ -19,7 +19,7 @@ export const settingsSchema = z.strictObject({
   capture: z.boolean().default(false),
   captureCommand: z.string().max(500).default(""),
   captureUrl: z.union([z.literal(""), z.url({ protocol: /^https?$/ })]).default(""),
-}).refine((settings) => settings.backend !== "pi" || settings.model === undefined || paidModel(settings.model) !== undefined, { message: "the pi backend runs one of the Shrike plan models" })
+}).refine((settings) => settings.backend !== "pi" || settings.model === undefined || settings.model === SHRIKER_PRO.id, { message: `the pi backend runs ${SHRIKER_PRO.name}` })
   .refine((settings) => !settings.capture || (settings.captureCommand.trim() !== "" && settings.captureUrl !== ""), { message: "capture needs the command that serves the app and the url it answers on" })
   .refine((settings) => settings.autofix !== "all" || settings.autofixReviews?.length !== 0, { message: "autofix of reviews and CI needs at least one review to fix, choose CI to fix only the checks" });
 
@@ -36,7 +36,7 @@ export const reviewSchema = z.object({
 const leaseSchema = z.object({
   keyId: z.string().min(1),
   key: z.string().min(1),
-  baseUrl: z.url(),
+  baseUrl: z.string().min(1),
   model: z.object({
     id: z.string().min(1),
     name: z.string().min(1),
@@ -78,10 +78,10 @@ export class SettingsApi {
     return res.json();
   }
 
-  async settings(requested: string[]): Promise<{ settings: Settings; reviews: Review[] }> {
+  async settings(requested: string[]): Promise<{ settings: Settings; reviews: Review[]; autofix: boolean }> {
     const query = requested.length ? `?reviews=${requested.join(",")}` : "";
-    const body = z.object({ settings: z.unknown(), reviews: z.array(reviewSchema) }).parse(await this.call(`/v1/settings${query}`));
-    return { settings: resolveSettings(body.settings), reviews: body.reviews };
+    const body = z.object({ settings: z.unknown(), reviews: z.array(reviewSchema), autofix: z.boolean().default(true) }).parse(await this.call(`/v1/settings${query}`));
+    return { settings: resolveSettings(body.settings), reviews: body.reviews, autofix: body.autofix };
   }
 
   async report(run: unknown): Promise<void> {
@@ -90,7 +90,10 @@ export class SettingsApi {
 
   async lease(): Promise<Lease | { refused: string }> {
     return this.call("/v1/gateway", { method: "POST" }).then(
-      (body) => leaseSchema.parse(body),
+      (body) => {
+        const lease = leaseSchema.parse(body);
+        return { ...lease, baseUrl: lease.baseUrl.startsWith("/") ? `${this.url}${lease.baseUrl}` : lease.baseUrl };
+      },
       (error: Error) => {
         if (!/answered 402:/.test(error.message)) throw error;
         return { refused: error.message.replace(/^.*answered 402: /, "") };

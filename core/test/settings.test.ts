@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { SHRIKER_PRO } from "../src/plans";
 import { actionsIdToken, DEFAULT_REVIEWS, resolveSettings, SettingsApi, settingsSchema } from "../src/settings";
 
 type Call = { url: string; init?: RequestInit };
@@ -123,6 +124,21 @@ describe("SettingsApi", () => {
     );
     expect((await api.settings([])).settings.reviews).toEqual(DEFAULT_REVIEWS);
     expect(calls[0]!.url).toBe("https://api.shrike.test/v1/settings");
+  });
+
+  test("a lease reaches the model through the API url, a 402 is a refusal", async () => {
+    const calls: Call[] = [];
+    const lease = { keyId: "k1", key: "shk_x", baseUrl: "/v1/llm", model: SHRIKER_PRO };
+    const api = new SettingsApi("https://api.shrike.test", async () => "t", fakeFetch(calls, () => (calls.length === 1 ? Response.json(lease) : new Response("acme is out of Shrike credits", { status: 402 }))));
+    expect(await api.lease()).toEqual({ ...lease, baseUrl: "https://api.shrike.test/v1/llm" });
+    expect(calls[0]!.url).toBe("https://api.shrike.test/v1/gateway");
+    expect(await api.lease()).toEqual({ refused: "acme is out of Shrike credits" });
+  });
+
+  test("autofix is allowed unless the API says the plan locks it", async () => {
+    const answer = (body: Record<string, unknown>) => new SettingsApi("https://api.shrike.test", async () => "t", fakeFetch([], () => Response.json({ settings: {}, reviews: [], ...body })));
+    expect((await answer({}).settings([])).autofix).toBe(true);
+    expect((await answer({ autofix: false }).settings([])).autofix).toBe(false);
   });
 
   test("rejects answers without prompts and non-200 responses", async () => {

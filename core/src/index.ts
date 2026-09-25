@@ -2,8 +2,8 @@
 // in this repository and by the hosted Shrike server.
 export { FREE_MODEL, getBackend } from "./backends";
 export type { Backend, AgentSession, Gateway, GatewayModel } from "./backends";
-export { allows, BACKENDS, creditsFor, DEFAULT_PAID_MODEL, JOB_CAP_CREDITS, MIN_KEY_CREDITS, PAID_MODELS, paidModel, PLANS, TOPUP_CREDITS, usdFor } from "./plans";
-export type { PaidModel, Plan, PlanId, Tier } from "./plans";
+export { allowsReview, BACKENDS, JOB_CAP_CREDITS, paidPlan, PLANS, SHRIKER_PRO, TOPUP_CREDITS, TOPUP_PRICE } from "./plans";
+export type { Plan, PlanId } from "./plans";
 export { PullRequestClient, refreshingAuth } from "./github";
 export type { PullRequest, PullRequestHistory, PushIdentity } from "./github";
 export { chatSchema, CHECK_ACTIONS, jobFromEvent, jobSchema, parseTrigger } from "./job";

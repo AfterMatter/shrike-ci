@@ -12,6 +12,7 @@ export interface AutofixDeps {
   timeoutMs?: number;
   pollMs?: number;
   remote?: string;
+  locked?: boolean;
 }
 
 export interface Failure {

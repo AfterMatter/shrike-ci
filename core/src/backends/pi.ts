@@ -13,22 +13,19 @@ const PI_PACKAGES = ["pi-acp@0.0.33", "@earendil-works/pi-coding-agent@0.87.1"];
 const REVIEW_TOOLS = ["read", "grep", "find", "ls"];
 const WRITE_TOOLS = ["read", "grep", "find", "ls", "bash", "edit", "write"];
 
-export const piConfig = ({ baseUrl, model }: Gateway, write: boolean) => {
-  const anthropic = model.id.startsWith("anthropic/");
-  return {
-    models: {
-      providers: {
-        shrike: {
-          baseUrl: anthropic ? baseUrl : `${baseUrl}/v1`,
-          api: anthropic ? "anthropic-messages" : "openai-completions",
-          apiKey: `$${GATEWAY_KEY_ENV}`,
-          models: [{ id: model.id, name: model.name, contextWindow: model.contextWindow, maxTokens: model.maxTokens, cost: model.cost }],
-        },
+export const piConfig = ({ baseUrl, model }: Gateway, write: boolean) => ({
+  models: {
+    providers: {
+      shrike: {
+        baseUrl,
+        api: "openai-completions",
+        apiKey: `$${GATEWAY_KEY_ENV}`,
+        models: [{ id: model.id, name: model.name, contextWindow: model.contextWindow, maxTokens: model.maxTokens, cost: model.cost }],
       },
     },
-    settings: { defaultProvider: "shrike", defaultModel: model.id, defaultTools: write ? WRITE_TOOLS : REVIEW_TOOLS, quietStartup: true, defaultProjectTrust: "trusted" },
-  };
-};
+  },
+  settings: { defaultProvider: "shrike", defaultModel: model.id, defaultTools: write ? WRITE_TOOLS : REVIEW_TOOLS, quietStartup: true, defaultProjectTrust: "trusted" },
+});
 
 const spentIn = async (dir: string): Promise<number> => {
   const files = await readdir(dir, { recursive: true }).catch(() => [] as string[]);

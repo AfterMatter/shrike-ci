@@ -32,7 +32,7 @@ export const opencodeConfig = (model: string, write: boolean, captureDir?: strin
           shrike: {
             npm: "@ai-sdk/openai-compatible",
             name: "Shrike",
-            options: { baseURL: `${gateway.baseUrl}/v1`, apiKey: `{env:${GATEWAY_KEY_ENV}}` },
+            options: { baseURL: gateway.baseUrl, apiKey: `{env:${GATEWAY_KEY_ENV}}` },
             models: { [gateway.model.id]: { name: gateway.model.name, limit: { context: gateway.model.contextWindow, output: gateway.model.maxTokens }, cost: { input: gateway.model.cost.input, output: gateway.model.cost.output, cache_read: gateway.model.cost.cacheRead, cache_write: gateway.model.cost.cacheWrite } } },
           },
         },

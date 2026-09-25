@@ -363,8 +363,9 @@ export async function runJob(job: Job, deps: RunDeps): Promise<ReviewRun[]> {
         await check.finish("neutral", `${decision}: summary written`, summary);
       });
     }
-    const messages = deps.autofix ? await headMessages(deps.cwd) : [];
-    const plan = deps.autofix ? planOf(job, deps.settings, messages[0] ?? "") : null;
+    if (deps.autofix?.locked && job.autofix) deps.log("autofix is part of the Max plan, skipping it");
+    const messages = deps.autofix && !deps.autofix.locked ? await headMessages(deps.cwd) : [];
+    const plan = deps.autofix && !deps.autofix.locked ? planOf(job, deps.settings, messages[0] ?? "") : null;
     if (plan) await fix(plan, attemptsAtHead(messages));
   };
   try {

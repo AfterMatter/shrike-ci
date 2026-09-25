@@ -7,6 +7,7 @@ import { stop, toolOutput } from "../src/backends/acp";
 import { opencodeBackend, opencodeConfig } from "../src/backends/opencode";
 import { fileIn } from "../src/capture";
 import { git } from "../src/checkout";
+import { SHRIKER_PRO } from "../src/plans";
 
 const live = process.env.SHRIKE_LIVE === "1" && Bun.which("opencode") !== null;
 const SERVER = join(import.meta.dir, "fixtures", "serve.ts");
@@ -97,12 +98,11 @@ test.skipIf(!live)("opencode on a plan talks to the gateway with the job key and
   const port = 20_000 + Math.floor(Math.random() * 20_000);
   const server = Bun.spawn(["bun", "run", join(import.meta.dir, "fixtures", "llm.ts"), String(port), seen], { stdout: "pipe", stderr: "ignore" });
   await new Response(server.stdout).body!.getReader().read();
-  const model = { id: "zai/glm-5.3", name: "GLM-5.3", contextWindow: 200_000, maxTokens: 32_000, cost: { input: 2, output: 6, cacheRead: 0.5, cacheWrite: 0 } };
-  const session = await opencodeBackend({ baseUrl: `http://127.0.0.1:${port}`, key: "vck_job_key", model }).open({ cwd, log: () => {} });
+  const session = await opencodeBackend({ baseUrl: `http://127.0.0.1:${port}/v1/llm`, key: "shk_job_key", model: SHRIKER_PRO }).open({ cwd, log: () => {} });
   try {
     await session.prompt("Read note.txt.");
     const request = JSON.parse(await readFile(seen, "utf8")) as { path: string; authorization: string; model: string };
-    expect(request).toMatchObject({ path: "/v1/chat/completions", authorization: "Bearer vck_job_key", model: "zai/glm-5.3" });
+    expect(request).toMatchObject({ path: "/v1/llm/chat/completions", authorization: "Bearer shk_job_key", model: "shriker-pro" });
   } finally {
     await session.close();
     server.kill();

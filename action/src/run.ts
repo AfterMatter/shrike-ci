@@ -59,11 +59,11 @@ const runs = await runJob(job, {
   site: apiUrl,
   log: (line) => console.log(line),
   onRun: (run, pr, from) => api.report(runRecord(job, run, pr, actionsRun, from)),
-  autofix: { identity: () => api.installationToken(), ownRunId: env("GITHUB_RUN_ID") },
+  autofix: { identity: () => api.installationToken(), ownRunId: env("GITHUB_RUN_ID"), locked: !fetched.autofix },
   capture: { identity: asApp },
   actionsRun,
   signal: abort.signal,
-}).finally(() => gateway && api.release(gateway.keyId).catch((error: Error) => console.log(`could not release the gateway key, it expires on its own: ${error.message}`)));
+}).finally(() => gateway && api.release(gateway.keyId).catch((error: Error) => console.log(`could not release the model key, it expires on its own: ${error.message}`)));
 
 const reportsDir = join(env("RUNNER_TEMP") ?? cwd, "shrike-reports");
 await mkdir(reportsDir, { recursive: true });

@@ -1117,6 +1117,23 @@ describe("autofix", () => {
     expect(trace.statuses.at(-1)).toContain(`| autofix |  | Pushed ${pushed.slice(0, 7)}: Make the test expect two |  |`);
   });
 
+  test("a plan without autofix never fixes, asked by the setting or a comment", async () => {
+    const { dir, sha, bare } = await withRemote();
+    const pr = prAt(dir, sha);
+    const { trace, backend, gh } = fakes({ "code-review": [report("warn", [finding])], shriken, autofix: fixed }, pr, { checks: [[failing()]], onFix: (cwd) => writeFile(join(cwd, "a.txt"), "two\n") });
+    const logs: string[] = [];
+    const asked: string[] = [];
+    const runs = await runJob(
+      { owner: "o", repo: "r", pr: 1, trigger: "comment", reviews: [], autofix: "all" },
+      { gh, backend, settings: settings({ autofix: "all" }), reviews, cwd: dir, log: (line) => logs.push(line), autofix: { ...autofix(bare, asked), locked: true } },
+    );
+    expect(runs.map((r) => r.review)).not.toContain("autofix");
+    expect(trace.sessions.some((s) => s.write)).toBe(false);
+    expect(asked).toEqual([]);
+    expect(await git(dir, ["rev-parse", "HEAD"])).toBe(sha);
+    expect(logs).toContain("autofix is part of the Max plan, skipping it");
+  });
+
   test("ci mode fixes nothing while a review is not green, and the setting off with no comment or trailer never runs", async () => {
     const { dir, sha, bare } = await withRemote();
     const pr = prAt(dir, sha);
