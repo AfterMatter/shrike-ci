@@ -57,7 +57,7 @@ export const FREE_MODEL = "opencode/big-pickle";
 export const opencodeBackend = (gateway?: Gateway): Backend => ({
   name: "acp",
   defaultModel: gateway?.model.id ?? FREE_MODEL,
-  async open({ cwd, model = FREE_MODEL, timeoutMs = DEFAULT_TIMEOUT_MS, write = false, captureDir, log, tool }: SessionOptions) {
+  async open({ cwd, model = FREE_MODEL, effort, timeoutMs = DEFAULT_TIMEOUT_MS, write = false, captureDir, log, tool, text }: SessionOptions) {
     if (captureDir) await installFfmpeg(log);
     const config = opencodeConfig(model, write, captureDir, gateway);
     return openAcp({
@@ -66,9 +66,11 @@ export const opencodeBackend = (gateway?: Gateway): Backend => ({
       cwd,
       env: childEnv({ OPENCODE_CONFIG_CONTENT: JSON.stringify(config), ...(gateway ? { [GATEWAY_KEY_ENV]: gateway.key } : {}) }),
       model: config.model as string,
+      effort,
       timeoutMs,
       log,
       tool,
+      text,
     });
   },
 });

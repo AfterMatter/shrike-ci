@@ -4,6 +4,10 @@ import type { GatewayModel } from "./backends/types";
 
 export const BACKENDS = ["acp", "pi"] as const;
 
+export const EFFORTS = ["none", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
+
+export type Effort = (typeof EFFORTS)[number];
+
 export type PlanId = "free" | "pro" | "max" | "enterprise";
 
 export interface Plan {
@@ -36,3 +40,5 @@ export const SHRIKER_PRO: GatewayModel = {
 export const paidPlan = (plan: PlanId): boolean => plan !== "free";
 
 export const allowsReview = (plan: PlanId, review: string): boolean => PLANS[plan].reviews?.includes(review) ?? true;
+
+export const freeModel = (model: string): boolean => model.startsWith("opencode/");

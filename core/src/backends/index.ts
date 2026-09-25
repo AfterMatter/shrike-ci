@@ -5,7 +5,7 @@ import { opencodeBackend } from "./opencode";
 import { piBackend } from "./pi";
 import type { Backend, Gateway } from "./types";
 
-export type { AgentReply, AgentSession, Backend, Gateway, GatewayModel, SessionOptions, ToolCall } from "./types";
+export type { AgentReply, AgentSession, Backend, Gateway, GatewayModel, SessionOptions, Streamed, ToolCall } from "./types";
 export { FREE_MODEL } from "./opencode";
 
 export function getBackend(name = "acp", gateway?: Gateway): Backend {

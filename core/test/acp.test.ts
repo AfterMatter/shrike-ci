@@ -3,7 +3,7 @@ import { access, mkdtemp, readdir, readFile, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
-import { stop, toolOutput } from "../src/backends/acp";
+import { openAcp, stop, toolOutput } from "../src/backends/acp";
 import { opencodeBackend, opencodeConfig } from "../src/backends/opencode";
 import { fileIn } from "../src/capture";
 import { git } from "../src/checkout";
@@ -11,6 +11,75 @@ import { SHRIKER_PRO } from "../src/plans";
 
 const live = process.env.SHRIKE_LIVE === "1" && Bun.which("opencode") !== null;
 const SERVER = join(import.meta.dir, "fixtures", "serve.ts");
+
+const scripted = (options: { effort?: string; timeoutMs?: number; plain?: boolean } = {}) => {
+  const logs: string[] = [];
+  const streamed: [string, string][] = [];
+  const opened = openAcp({
+    command: "bun",
+    args: ["run", "agent.ts", ...(options.plain ? ["plain"] : [])],
+    cwd: join(import.meta.dir, "fixtures"),
+    env: process.env,
+    model: "fake",
+    effort: options.effort,
+    timeoutMs: options.timeoutMs ?? 60_000,
+    log: (line) => logs.push(line),
+    text: (role, chunk) => streamed.push([role, chunk]),
+  });
+  return { opened, logs, streamed };
+};
+
+test("thoughts and reply chunks stream as they arrive, and only the reply is the answer", async () => {
+  const { opened, streamed } = scripted();
+  const session = await opened;
+  try {
+    expect((await session.prompt("hi")).text).toBe("level medium prompt 1");
+    expect(streamed).toEqual([["thinking", "thinking "], ["thinking", "hard"], ["reply", "level medium "], ["reply", "prompt 1"]]);
+  } finally {
+    await session.close();
+  }
+}, 30_000);
+
+test("an effort picks the agent's thought level, max and none map onto its range, and an agent without levels only logs it", async () => {
+  for (const [effort, level] of [["high", "high"], ["max", "xhigh"], ["none", "off"]]) {
+    const session = await scripted({ effort }).opened;
+    expect((await session.prompt("hi")).text).toBe(`level ${level} prompt 1`);
+    await session.close();
+  }
+  const plain = scripted({ effort: "high", plain: true });
+  const session = await plain.opened;
+  expect((await session.prompt("hi")).text).toBe("level medium prompt 1");
+  expect(plain.logs).toContain("bun offers no high effort, running its default");
+  await session.close();
+}, 60_000);
+
+test("a cancel stops the prompt in flight and the same session answers the next prompt", async () => {
+  const { opened } = scripted();
+  const session = await opened;
+  try {
+    const slow = session.prompt("wait 20000");
+    await Bun.sleep(300);
+    await session.cancel!();
+    await expect(slow).rejects.toThrow("agent stopped with cancelled");
+    expect((await session.prompt("next")).text).toBe("level medium prompt 2");
+  } finally {
+    await session.close();
+  }
+}, 30_000);
+
+test("the timeout bounds each prompt, not the session", async () => {
+  const { opened, logs } = scripted({ timeoutMs: 1500 });
+  const session = await opened;
+  try {
+    for (let prompt = 1; prompt <= 3; prompt++) {
+      expect((await session.prompt("wait 700")).text).toBe(`level medium prompt ${prompt}`);
+    }
+    await expect(session.prompt("wait 5000")).rejects.toThrow();
+    expect(logs).toContain("agent timed out after 1500ms, killing bun");
+  } finally {
+    await session.close();
+  }
+}, 30_000);
 
 test("the opencode config denies writing and the browser for reviews but keeps bash alive for git reads, opens writing for fixes, and adds the playwright server for captures", () => {
   const review = opencodeConfig("opencode/big-pickle", false);

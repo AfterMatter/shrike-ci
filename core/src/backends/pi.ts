@@ -1,5 +1,5 @@
-// pi harness for paid plans: runs pi-acp against the Shrike gateway with a
-// per job key, read only tools for reviews and cost read from pi's sessions.
+// pi harness for paid plans: runs pi-acp on the leased gateway model with its
+// key, read only tools for reviews, thinking on request, cost from pi's sessions.
 import { execFile } from "node:child_process";
 import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -13,14 +13,14 @@ const PI_PACKAGES = ["pi-acp@0.0.33", "@earendil-works/pi-coding-agent@0.87.1"];
 const REVIEW_TOOLS = ["read", "grep", "find", "ls"];
 const WRITE_TOOLS = ["read", "grep", "find", "ls", "bash", "edit", "write"];
 
-export const piConfig = ({ baseUrl, model }: Gateway, write: boolean) => ({
+export const piConfig = ({ baseUrl, model }: Gateway, write: boolean, reasoning = false) => ({
   models: {
     providers: {
       shrike: {
         baseUrl,
         api: "openai-completions",
         apiKey: `$${GATEWAY_KEY_ENV}`,
-        models: [{ id: model.id, name: model.name, contextWindow: model.contextWindow, maxTokens: model.maxTokens, cost: model.cost }],
+        models: [{ id: model.id, name: model.name, reasoning, contextWindow: model.contextWindow, maxTokens: model.maxTokens, cost: model.cost }],
       },
     },
   },
@@ -49,10 +49,10 @@ export const piBackend = (gateway: Gateway): Backend => {
     defaultModel: gateway.model.id,
     async open(options: SessionOptions): Promise<AgentSession> {
       if (options.captureDir) return capture.open(options);
-      const { cwd, timeoutMs = DEFAULT_TIMEOUT_MS, write = false, log, tool } = options;
+      const { cwd, effort, timeoutMs = DEFAULT_TIMEOUT_MS, write = false, log, tool, text } = options;
       await ensurePi(log);
       const dir = await mkdtemp(join(tmpdir(), "shrike-pi-"));
-      const config = piConfig(gateway, write);
+      const config = piConfig(gateway, write, effort !== undefined);
       await Promise.all([writeFile(join(dir, "models.json"), JSON.stringify(config.models)), writeFile(join(dir, "settings.json"), JSON.stringify(config.settings))]);
       const session = await openAcp({
         command: process.env.PI_ACP_BIN ?? "pi-acp",
@@ -60,15 +60,17 @@ export const piBackend = (gateway: Gateway): Backend => {
         cwd,
         env: childEnv({ PI_CODING_AGENT_DIR: dir, PI_OFFLINE: "1", PI_SKIP_VERSION_CHECK: "1", [GATEWAY_KEY_ENV]: gateway.key }),
         model: `shrike/${gateway.model.id}`,
+        effort,
         timeoutMs,
         log,
         tool,
+        text,
         cost: () => spentIn(join(dir, "sessions")),
       }).catch(async (error) => {
         await rm(dir, { recursive: true, force: true });
         throw error;
       });
-      return { prompt: (text) => session.prompt(text), close: () => session.close().finally(() => rm(dir, { recursive: true, force: true })) };
+      return { ...session, close: () => session.close().finally(() => rm(dir, { recursive: true, force: true })) };
     },
   };
 };

@@ -5,7 +5,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { attemptsAtHead, AUTOFIX, autofixMessage, commitAndPush, fixes, headMessages, planOf, problemsOf, reviewsGreen, waitForChecks, type AutofixDeps, type Plan } from "./autofix";
-import { AGENT, runAgent, type AgentReport } from "./agent";
+import { AGENT, runAgent, runChat, type AgentReport, type ChatDeps } from "./agent";
 import type { AgentSession, Backend } from "./backends";
 import { baseWorktree, CAPTURE, captureHeadline, captureOf, collect, MEDIA_BRANCH, mediaPath, parsePlan, parseTaken, renderCapture, serve, type CaptureDeps, type Side } from "./capture";
 import { decisionIn, patchIn, plainDecision, renderCard, type Card, type OpenItem } from "./card";
@@ -20,7 +20,7 @@ import type { Review, Settings } from "./settings";
 import { flag, judge, lineReader, renderThread, type Flagged, type Thread } from "./threads";
 
 export interface Turn {
-  role: "prompt" | "reply" | "tool";
+  role: "prompt" | "reply" | "thinking" | "tool";
   text: string;
   output?: string;
 }
@@ -72,11 +72,12 @@ export interface RunDeps {
   site?: string;
   parallel?: number;
   log: (line: string) => void;
-  onRun?: (run: ReviewRun, at: RunTarget, from: number) => Promise<void>;
+  onRun?: (run: ReviewRun, at: RunTarget, from: number) => Promise<unknown>;
   live?: { throttleMs: number; beatMs: number };
   autofix?: AutofixDeps;
   capture?: CaptureDeps;
   actionsRun?: string;
+  chat?: ChatDeps;
   signal?: AbortSignal;
 }
 
@@ -138,6 +139,7 @@ async function limited<T>(items: T[], cap: number, work: (item: T) => Promise<vo
 }
 
 export async function runJob(job: Job, deps: RunDeps): Promise<ReviewRun[]> {
+  if (job.chat && deps.chat) return runChat(job, deps);
   const asked = job.prompt !== undefined && (!job.reviews.length || job.reviews.some((name) => !deps.reviews.some((review) => review.name === name)));
   if (job.pr === undefined || asked) return [await runAgent(job, deps)];
   const pr = await deps.gh.load({ ...job, pr: job.pr });
@@ -179,10 +181,10 @@ export async function runJob(job: Job, deps: RunDeps): Promise<ReviewRun[]> {
   let shared: AgentSession | undefined;
   const openFor = async (run: ReviewRun, { write = false, captureDir }: OpenOptions): Promise<Opened> => {
     const log = (line: string) => deps.log(`[${run.review}] ${line}`);
-    const tool = live.tool(run);
-    if (write || captureDir || deps.settings.session !== "shared") return { session: await deps.backend.open({ cwd: deps.cwd, model, write, captureDir, log, tool }), followUp: false };
+    const hooks = { tool: live.tool(run), text: live.text(run) };
+    if (write || captureDir || deps.settings.session !== "shared") return { session: await deps.backend.open({ cwd: deps.cwd, model, write, captureDir, log, ...hooks }), followUp: false };
     const followUp = shared !== undefined;
-    shared ??= await deps.backend.open({ cwd: deps.cwd, model, log, tool });
+    shared ??= await deps.backend.open({ cwd: deps.cwd, model, log, tool: hooks.tool });
     return { session: shared, followUp };
   };
   const step = async (run: ReviewRun, work: (opened: (options?: OpenOptions) => Promise<Opened>, check: CheckHandle) => Promise<void>) => {

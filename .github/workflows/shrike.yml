@@ -11,7 +11,7 @@ on:
 jobs:
   review:
     if: ${{ !github.event.comment || (github.event.comment.user.type != 'Bot' && startsWith(github.event.comment.body, 'shrike')) }}
-    concurrency: shrike-${{ github.event.pull_request.number || github.event.issue.number || github.event.client_payload.pr || github.event.client_payload.chat.id }}
+    concurrency: shrike-${{ github.event.client_payload.chat.id || github.event.pull_request.number || github.event.issue.number || github.event.client_payload.pr }}
     runs-on: ubuntu-latest
     permissions:
       contents: read

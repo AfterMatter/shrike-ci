@@ -1,9 +1,10 @@
 // GitHub Action entrypoint: turns the workflow event into a job, fetches
-// settings and reviews from the Shrike API, runs them as the Shrike App.
+// settings and reviews from the Shrike API, runs them or a warm chat.
+import { randomUUID } from "node:crypto";
 import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { Octokit } from "octokit";
-import { actionsIdToken, getBackend, jobFromEvent, PullRequestClient, refreshingAuth, runJob, runRecord, SettingsApi, SHRIKEN, type PushIdentity } from "@shrike/core";
+import { actionsIdToken, getBackend, jobFromEvent, keyedOnChat, PullRequestClient, refreshingAuth, runJob, runRecord, SettingsApi, SHRIKEN, type PushIdentity } from "@shrike/core";
 
 const env = (name: string) => process.env[name]?.trim() || undefined;
 const apiUrl = env("INPUT_API_URL");
@@ -20,7 +21,7 @@ if (!job) {
 
 const api = new SettingsApi(apiUrl.replace(/\/$/, ""), () => actionsIdToken());
 const fetched = await api.settings(job.reviews);
-const lease = fetched.settings.backend === "pi" ? await api.lease() : null;
+const lease = fetched.settings.backend === "pi" && !job.chat ? await api.lease() : null;
 if (lease && "refused" in lease) console.log(`${lease.refused}, reviewing with the free model instead`);
 const gateway = lease && !("refused" in lease) ? lease : undefined;
 if (gateway) console.log(`::add-mask::${gateway.key}`);
@@ -39,6 +40,8 @@ const identity = await asApp();
 console.log(`posting as ${identity.name}${identity.expiresAt ? "" : ", install the Shrike GitHub App on this repository to post as Shrike"}`);
 
 const cwd = resolve(env("GITHUB_WORKSPACE") ?? process.cwd());
+const workflow = env("GITHUB_WORKFLOW_REF")?.replace(/^[^/]+\/[^/]+\//, "").replace(/@.*$/, "");
+const keyed = workflow ? await readFile(join(cwd, workflow), "utf8").then(keyedOnChat).catch(() => false) : false;
 const runId = env("GITHUB_RUN_ID");
 const runAttempt = env("GITHUB_RUN_ATTEMPT");
 const actionsRun = runId && runAttempt ? `${runId}.${runAttempt}` : undefined;
@@ -59,17 +62,23 @@ const runs = await runJob(job, {
   site: apiUrl,
   log: (line) => console.log(line),
   onRun: (run, pr, from) => api.report(runRecord(job, run, pr, actionsRun, from)),
+  chat: {
+    api: { chat: api.chat.bind(api), settle: api.settle.bind(api), renew: api.renew.bind(api), lease: (model, effort) => api.lease(model, effort).then((own) => ("key" in own && console.log(`::add-mask::${own.key}`), own)) },
+    runner: actionsRun ?? `local:${randomUUID()}`,
+    keyed,
+    backend: (own) => getBackend(own ? "pi" : "acp", own),
+  },
   autofix: { identity: () => api.installationToken(), ownRunId: env("GITHUB_RUN_ID"), locked: !fetched.autofix },
   capture: { identity: asApp },
   actionsRun,
   signal: abort.signal,
-}).finally(() => gateway && api.release(gateway.keyId).catch((error: Error) => console.log(`could not release the model key, it expires on its own: ${error.message}`)));
+}).finally(() => gateway && api.settle(gateway.keyId).catch((error: Error) => console.log(`could not release the model key, it expires on its own: ${error.message}`)));
 
 const reportsDir = join(env("RUNNER_TEMP") ?? cwd, "shrike-reports");
 await mkdir(reportsDir, { recursive: true });
-await Promise.all(runs.map((run) => writeFile(join(reportsDir, `${run.review}.json`), JSON.stringify({ ...job, ...run }, null, 2))));
+await Promise.all(runs.map((run) => writeFile(join(reportsDir, `${job.chat ? run.key : run.review}.json`), JSON.stringify({ ...job, ...run }, null, 2))));
 if (env("GITHUB_OUTPUT")) await appendFile(env("GITHUB_OUTPUT")!, `reports=${reportsDir}\n`);
 
-const failed = runs.filter((run) => run.status === "cancelled" || (run.status === "error" && run.review !== SHRIKEN));
+const failed = runs.filter((run) => run.status === "error" && run.review !== SHRIKEN);
 console.log(`${runs.length - failed.length}/${runs.length} reviews completed, reports in ${reportsDir}`);
 if (failed.length || abort.signal.aborted) process.exit(1);

@@ -1,21 +1,21 @@
-// Live side of runs: transcripts, asking with one retry, and chunked reports
-// on start, new turns, tool output, a heartbeat, the end and cancels.
-import type { AgentSession, ToolCall } from "./backends";
+// Live side of runs: streamed transcripts, asking with one retry, chunked reports
+// on start, growing turns, a heartbeat, the end, cancels and stops from the API.
+import type { AgentSession, Streamed, ToolCall } from "./backends";
 import type { ReviewRun, Turn } from "./runner";
 
 export interface LiveDeps {
-  report?: (run: ReviewRun, from: number) => Promise<void>;
+  report?: (run: ReviewRun, from: number) => Promise<unknown>;
   live?: { throttleMs: number; beatMs: number };
   log: (line: string) => void;
   signal?: AbortSignal;
 }
 
-type Wire = { chain: Promise<void>; sent: number; low: number; edits: number; failed: boolean };
+type Wire = { chain: Promise<void>; sent: number; low: number; edits: number; failed: boolean; stop?: () => void; stopped: boolean };
 
 export const KEEP = 4000;
 export const TURNS = 200;
 const PROMPT_KEEP = 20_000;
-const LIVE = { throttleMs: 3000, beatMs: 60_000 };
+export const LIVE = { throttleMs: 3000, beatMs: 60_000 };
 
 const message = (error: unknown): string => (error instanceof Error ? error.message : String(error));
 
@@ -24,27 +24,35 @@ const unfinished = (run: ReviewRun) => run.status === "queued" || run.status ===
 export const said = (run: ReviewRun, role: Turn["role"], text: string) =>
   (run.transcript ??= []).push({ role, text: role === "prompt" && text.length > PROMPT_KEEP ? `${text.slice(0, PROMPT_KEEP)}\n(prompt cut after ${PROMPT_KEEP} characters)` : text });
 
+const prompted = async (run: ReviewRun, session: AgentSession, text: string): Promise<string> => {
+  said(run, "prompt", text);
+  const at = run.transcript!.length;
+  const answer = await session.prompt(text);
+  if (!run.transcript!.slice(at).some((turn) => turn.role === "reply")) said(run, "reply", answer.text);
+  run.usage = answer.usage;
+  return answer.text;
+};
+
 export async function ask<T>(run: ReviewRun, session: AgentSession, prompt: string, retry: string, parse: (text: string) => T, log: (line: string) => void): Promise<T> {
-  said(run, "prompt", prompt);
-  const first = await session.prompt(prompt);
-  said(run, "reply", first.text);
-  run.usage = first.usage;
+  const first = await prompted(run, session, prompt);
   try {
-    return parse(first.text);
+    return parse(first);
   } catch (error) {
     const problem = message(error);
     log(`[${run.review}] ${problem}, asking again`);
-    said(run, "prompt", `${retry}\nWhat was wrong: ${problem}.`);
-    const second = await session.prompt(`${retry}\nWhat was wrong: ${problem}.`);
-    said(run, "reply", second.text);
-    run.usage = second.usage;
-    return parse(second.text);
+    return parse(await prompted(run, session, `${retry}\nWhat was wrong: ${problem}.`));
   }
 }
 
 export function wires({ report, live = LIVE, log, signal }: LiveDeps) {
   const all = new Map<ReviewRun, Wire>();
-  const wireOf = (run: ReviewRun) => all.get(run) ?? all.set(run, { chain: Promise.resolve(), sent: 0, low: Infinity, edits: 0, failed: false }).get(run)!;
+  const wireOf = (run: ReviewRun) => all.get(run) ?? all.set(run, { chain: Promise.resolve(), sent: 0, low: Infinity, edits: 0, failed: false, stopped: false }).get(run)!;
+  const touch = (run: ReviewRun, index: number) => {
+    const own = wireOf(run);
+    own.sent = Math.min(own.sent, index);
+    own.low = Math.min(own.low, index);
+    own.edits += 1;
+  };
   const flush = async (run: ReviewRun, whole = false) => {
     const own = wireOf(run);
     for (let last = false; !last; ) {
@@ -53,8 +61,12 @@ export function wires({ report, live = LIVE, log, signal }: LiveDeps) {
       const to = Math.min(length, from + TURNS);
       last = !whole || to === length;
       own.low = Infinity;
-      await report?.(last ? run : { ...run, status: "running", finishedAt: undefined }, from);
+      const status = await report?.(last ? run : { ...run, status: "running", finishedAt: undefined }, from);
       own.sent = Math.min(own.low, to);
+      if (status !== "cancelled" || !own.stop || own.stopped || !unfinished(run)) continue;
+      own.stopped = true;
+      log(`[${run.review}] stopped from the website`);
+      own.stop();
     }
   };
   const send = (run: ReviewRun) => {
@@ -77,18 +89,22 @@ export function wires({ report, live = LIVE, log, signal }: LiveDeps) {
       }
       if (output === undefined) return;
       turn.output = output.length > KEEP ? `${output.slice(0, KEEP - 6)}\n(cut)` : output;
-      const own = wireOf(run);
-      const index = run.transcript!.indexOf(turn);
-      own.sent = Math.min(own.sent, index);
-      own.low = Math.min(own.low, index);
-      own.edits += 1;
+      touch(run, run.transcript!.indexOf(turn));
     };
   };
-  const track = async (run: ReviewRun, work: () => Promise<void>) => {
+  const text = (run: ReviewRun) => (role: Streamed, chunk: string) => {
+    const turns = (run.transcript ??= []);
+    const last = turns.at(-1);
+    if (last?.role !== role) turns.push({ role, text: chunk });
+    else if (role === "reply" || last.text.length < PROMPT_KEEP) last.text += chunk;
+    touch(run, turns.length - 1);
+  };
+  const track = async (run: ReviewRun, work: () => Promise<void>, stop?: () => void) => {
     if (signal?.aborted) return;
     run.status = "running";
     run.startedAt = new Date().toISOString();
     const own = wireOf(run);
+    own.stop = stop;
     let seen = { mark: 0, at: Date.now() };
     send(run);
     const ticker = setInterval(() => {
@@ -100,12 +116,14 @@ export function wires({ report, live = LIVE, log, signal }: LiveDeps) {
     try {
       await work();
       if (signal?.aborted) return;
-      run.status = "done";
+      run.status = own.stopped ? "cancelled" : "done";
     } catch (error) {
       if (signal?.aborted) return;
-      run.status = "error";
-      run.error = message(error);
-      log(`[${run.review}] failed: ${run.error}`);
+      run.status = own.stopped ? "cancelled" : "error";
+      if (!own.stopped) {
+        run.error = message(error);
+        log(`[${run.review}] failed: ${run.error}`);
+      }
     } finally {
       clearInterval(ticker);
     }
@@ -130,5 +148,5 @@ export function wires({ report, live = LIVE, log, signal }: LiveDeps) {
     };
     await Promise.race([work(), stopped.then(cancel)]);
   };
-  return { send, tool, track, guard };
+  return { send, tool, text, track, guard, stopped: (run: ReviewRun) => wireOf(run).stopped };
 }

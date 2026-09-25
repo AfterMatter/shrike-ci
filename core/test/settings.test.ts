@@ -13,7 +13,7 @@ function fakeFetch(calls: Call[], reply: (url: string) => Response) {
 
 describe("settings schema", () => {
   test("empty settings resolve to the default reviews and fresh sessions", () => {
-    expect(resolveSettings(undefined)).toEqual({ reviews: DEFAULT_REVIEWS, backend: "acp", session: "fresh", shriken: true, autofix: "off", autofixLimit: 5, capture: false, captureCommand: "", captureUrl: "" });
+    expect(resolveSettings(undefined)).toEqual({ reviews: DEFAULT_REVIEWS, backend: "acp", session: "fresh", shriken: true, autofix: "off", autofixLimit: 5, capture: false, captureCommand: "", captureUrl: "", chatIdle: 180 });
     expect(resolveSettings({ reviews: [] }).reviews).toEqual(DEFAULT_REVIEWS);
   });
 
@@ -22,7 +22,7 @@ describe("settings schema", () => {
   });
 
   test("configured values win and unknown keys are rejected", () => {
-    expect(resolveSettings({ reviews: ["cleanup"], model: "x/y", session: "shared", shriken: false, autofix: "ci", autofixLimit: 3, capture: true, captureCommand: "bun run dev", captureUrl: "http://localhost:5173" })).toEqual({
+    expect(resolveSettings({ reviews: ["cleanup"], model: "x/y", session: "shared", shriken: false, autofix: "ci", autofixLimit: 3, capture: true, captureCommand: "bun run dev", captureUrl: "http://localhost:5173", chatIdle: 240 })).toEqual({
       reviews: ["cleanup"],
       backend: "acp",
       model: "x/y",
@@ -33,6 +33,7 @@ describe("settings schema", () => {
       capture: true,
       captureCommand: "bun run dev",
       captureUrl: "http://localhost:5173",
+      chatIdle: 240,
     });
     expect(() => settingsSchema.parse({ autofix: "always" })).toThrow();
     expect(() => settingsSchema.parse({ autofixLimit: 0 })).toThrow();
@@ -111,7 +112,7 @@ describe("SettingsApi", () => {
     const result = await api.settings(["cleanup", "code-review"]);
     expect(calls[0]!.url).toBe("https://api.shrike.test/v1/settings?reviews=cleanup,code-review");
     expect((calls[0]!.init!.headers as Record<string, string>).authorization).toBe("Bearer oidc-jwt");
-    expect(result.settings).toEqual({ reviews: ["cleanup"], backend: "acp", session: "shared", shriken: true, autofix: "off", autofixLimit: 5, capture: false, captureCommand: "", captureUrl: "" });
+    expect(result.settings).toEqual({ reviews: ["cleanup"], backend: "acp", session: "shared", shriken: true, autofix: "off", autofixLimit: 5, capture: false, captureCommand: "", captureUrl: "", chatIdle: 180 });
     expect(result.reviews).toEqual([{ name: "cleanup", description: "d", body: "Rules." }]);
   });
 
@@ -133,6 +134,61 @@ describe("SettingsApi", () => {
     expect(await api.lease()).toEqual({ ...lease, baseUrl: "https://api.shrike.test/v1/llm" });
     expect(calls[0]!.url).toBe("https://api.shrike.test/v1/gateway");
     expect(await api.lease()).toEqual({ refused: "acme is out of Shrike credits" });
+    expect(JSON.parse(calls[0]!.init!.body as string)).toEqual({});
+  });
+
+  test("a lease asks for the ask's model and effort, and settling posts the key id", async () => {
+    const calls: Call[] = [];
+    const api = new SettingsApi("https://api.shrike.test", async () => "t", fakeFetch(calls, () => Response.json({ keyId: "k1", key: "shk_x", baseUrl: "/v1/llm", model: SHRIKER_PRO })));
+    await api.lease("anthropic/claude-x", "high");
+    await api.settle("k1");
+    expect(calls.map((call) => [call.url, JSON.parse(call.init!.body as string)])).toEqual([
+      ["https://api.shrike.test/v1/gateway", { model: "anthropic/claude-x", effort: "high" }],
+      ["https://api.shrike.test/v1/gateway/settle", { keyId: "k1" }],
+    ]);
+  });
+
+  test("a chat claim reads an ask, nothing waiting, a held chat and an older server apart", async () => {
+    const ask = { key: "0f0c1d2e-3a4b-4c5d-8e6f-7a8b9c0d1e2f", ask: "and now?", sha: "c".repeat(40), branch: "main", effort: "high" as const, history: [{ ask: "a", reply: "b" }] };
+    const replies = [Response.json(ask, { headers: { "x-shrike-idle": "240" } }), new Response(null, { status: 204, headers: { "x-shrike-idle": "150" } }), new Response(null, { status: 204 }), new Response("another runner answers this chat", { status: 409 }), new Response("404 Not Found", { status: 404 }), new Response("down", { status: 500 }), Response.json({ ...ask, sha: "nope" })];
+    const calls: Call[] = [];
+    const api = new SettingsApi("https://api.shrike.test", async () => "t", fakeFetch(calls, () => replies.shift()!));
+    const body = { runner: "12.1", wait: 20_000, until: "2026-09-25T10:00:00.000Z" };
+    expect(await api.chat("c1", "claim", body)).toEqual({ ask, idle: 240 });
+    expect(await api.chat("c1", "release", { runner: "12.1" })).toEqual({ idle: 150 });
+    expect(await api.chat("c1", "claim", body)).toEqual({ idle: 180 });
+    expect(await api.chat("c1", "claim", body)).toBe("busy");
+    expect(await api.chat("c1", "claim", body)).toBe("gone");
+    await expect(api.chat("c1", "claim", body)).rejects.toThrow(/answered 500: down/);
+    await expect(api.chat("c1", "claim", body)).rejects.toThrow();
+    expect(calls.slice(0, 2).map((call) => [call.url, JSON.parse(call.init!.body as string)])).toEqual([
+      ["https://api.shrike.test/v1/chats/c1/claim", body],
+      ["https://api.shrike.test/v1/chats/c1/release", { runner: "12.1" }],
+    ]);
+  });
+
+  test("renewing a lease posts the key id, an older server's 404 is fine and other failures throw", async () => {
+    const calls: Call[] = [];
+    const replies = [Response.json({ renewed: true }), new Response("404 Not Found", { status: 404 }), new Response("acme is out of Shrike credits", { status: 402 })];
+    const api = new SettingsApi("https://api.shrike.test", async () => "t", fakeFetch(calls, () => replies.shift()!));
+    await api.renew("k1");
+    await api.renew("k1");
+    await expect(api.renew("k1")).rejects.toThrow(/answered 402/);
+    expect(calls.map((call) => [call.url, JSON.parse(call.init!.body as string)])).toEqual(Array(3).fill(["https://api.shrike.test/v1/gateway/renew", { keyId: "k1" }]));
+  });
+
+  test("a report answers the run's current status, and an older server's empty answer is no status", async () => {
+    const replies = [Response.json({ status: "cancelled" }), new Response(null, { status: 201 })];
+    const api = new SettingsApi("https://api.shrike.test", async () => "t", fakeFetch([], () => replies.shift()!));
+    expect(await api.report({ key: "k" })).toBe("cancelled");
+    expect(await api.report({ key: "k" })).toBeUndefined();
+  });
+
+  test("the chat idle window stays between two and five minutes", () => {
+    expect(() => settingsSchema.parse({ chatIdle: 119 })).toThrow();
+    expect(() => settingsSchema.parse({ chatIdle: 301 })).toThrow();
+    expect(() => settingsSchema.parse({ chatIdle: 150.5 })).toThrow();
+    expect(settingsSchema.parse({ chatIdle: 300 }).chatIdle).toBe(300);
   });
 
   test("autofix is allowed unless the API says the plan locks it", async () => {

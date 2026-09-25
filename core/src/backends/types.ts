@@ -1,10 +1,12 @@
-// Backend contract: one agent session per skill run.
+// Backend contract: agent sessions that stream text and tools and can cancel.
 // Only backends/ may know which agent runtime is used.
 
 export interface AgentReply {
   text: string;
   usage: { tokens: number; cost: number };
 }
+
+export type Streamed = "thinking" | "reply";
 
 export interface ToolCall {
   id: string;
@@ -15,17 +17,20 @@ export interface ToolCall {
 
 export interface AgentSession {
   prompt(text: string): Promise<AgentReply>;
+  cancel?(): Promise<void>;
   close(): Promise<void>;
 }
 
 export interface SessionOptions {
   cwd: string;
   model?: string;
+  effort?: string;
   timeoutMs?: number;
   write?: boolean;
   captureDir?: string;
   log: (line: string) => void;
   tool?: (call: ToolCall) => void;
+  text?: (role: Streamed, chunk: string) => void;
 }
 
 export interface Backend {

@@ -28,6 +28,12 @@ describe("pi config", () => {
     expect(config.models.providers.shrike.apiKey).toBe("$SHRIKE_LLM_KEY");
   });
 
+  test("the leased model reasons only when an ask sets an effort", () => {
+    expect(piConfig(gateway(), false).models.providers.shrike.models).toEqual([expect.objectContaining({ id: "shriker-pro", reasoning: false })]);
+    expect(piConfig({ ...gateway(), model: { ...model, id: "anthropic/claude-x" } }, true, true).models.providers.shrike.models).toEqual([expect.objectContaining({ id: "anthropic/claude-x", reasoning: true })]);
+    expect(piConfig({ ...gateway(), model: { ...model, id: "anthropic/claude-x" } }, true, true).settings.defaultModel).toBe("anthropic/claude-x");
+  });
+
   test("the model speaks chat completions at the relay base url as given", () => {
     expect(piConfig(gateway(), false).models.providers.shrike).toMatchObject({ baseUrl: "https://shrike.test/v1/llm", api: "openai-completions" });
   });
