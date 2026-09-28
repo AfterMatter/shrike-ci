@@ -1,0 +1,9 @@
+node_modules/
+.env
+.shrike/
+.opencode/
+.playwright-mcp/
+*.log
+.claude/
+
+.vercel

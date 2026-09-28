@@ -1,0 +1,42 @@
+name: Shrike
+description: Runs Shrike reviews on a pull request with the settings and review instructions configured on the Shrike website.
+author: forloopcodes
+branding:
+  icon: eye
+  color: purple
+inputs:
+  api_url:
+    description: Shrike API base URL shown on the website, usually the SHRIKE_API_URL repository variable. The job needs the id-token write permission.
+    required: true
+  github_token:
+    description: Job token used to read the PR and post results only when the Shrike GitHub App is not installed on the repository.
+    required: false
+    default: ${{ github.token }}
+outputs:
+  reports:
+    description: Directory containing one JSON report per review run.
+    value: ${{ steps.run.outputs.reports }}
+runs:
+  using: composite
+  steps:
+    - name: Install Bun
+      uses: oven-sh/setup-bun@v2
+      with:
+        bun-version: 1.3.14
+    - name: Install Shrike
+      shell: bash
+      env:
+        SHRIKE_API_URL: ${{ inputs.api_url }}
+        INSTALLER_SHA: 1918ea8fc0b92432a9be7e5a56c355f68d84d014466780c7f5ce658d103007fd
+      run: |
+        cd "${GITHUB_ACTION_PATH}/.."
+        bun install --frozen-lockfile --production
+        bash "${GITHUB_ACTION_PATH}/bootstrap.sh"
+        echo "${HOME}/.bun/bin" >> "${GITHUB_PATH}"
+    - name: Run reviews
+      id: run
+      shell: bash
+      env:
+        INPUT_API_URL: ${{ inputs.api_url }}
+        INPUT_GITHUB_TOKEN: ${{ inputs.github_token }}
+      run: exec bun run "${GITHUB_ACTION_PATH}/src/run.ts"

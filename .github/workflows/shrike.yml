@@ -1,0 +1,23 @@
+name: Shrike
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  issue_comment:
+    types: [created]
+  pull_request_review_comment:
+    types: [created]
+  repository_dispatch:
+    types: [shrike]
+jobs:
+  review:
+    if: ${{ !github.event.comment || (github.event.comment.user.type != 'Bot' && startsWith(github.event.comment.body, 'shrike')) }}
+    concurrency: shrike-${{ github.event.client_payload.chat.id || github.event.pull_request.number || github.event.issue.number || github.event.client_payload.pr }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: AfterMatter/shrike-ci/action@main
+        with:
+          api_url: https://shriken.vercel.app

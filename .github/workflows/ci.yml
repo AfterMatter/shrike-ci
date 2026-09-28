@@ -1,0 +1,29 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+      - run: bun install --frozen-lockfile
+      - name: Install review harness
+        env:
+          SHRIKE_API_URL: https://shriken.vercel.app
+          INSTALLER_SHA: 1918ea8fc0b92432a9be7e5a56c355f68d84d014466780c7f5ce658d103007fd
+        run: bash action/bootstrap.sh
+      - run: bun run typecheck
+      - run: bun test
+        env:
+          SHRIKE_LIVE: "1"
+          SHRIKE_AGENT_BIN: ${{ secrets.SHRIKE_AGENT_BIN }}
+          SHRIKE_AGENT_CONFIG_ENV: ${{ secrets.SHRIKE_AGENT_CONFIG_ENV }}
+          SHRIKE_AGENT_UPSTREAM: ${{ secrets.SHRIKE_AGENT_UPSTREAM }}
